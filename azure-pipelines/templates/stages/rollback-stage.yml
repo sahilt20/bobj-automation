@@ -1,0 +1,157 @@
+# Rollback Stage Template for BOBJ Content
+# Restores previous state from backup on deployment failure
+
+parameters:
+  - name: targetEnvironment
+    type: string
+  - name: backupArtifactName
+    type: string
+  - name: triggerCondition
+    type: string
+    default: 'failed()'
+  - name: dependsOn
+    type: object
+    default: []
+  - name: sendNotification
+    type: boolean
+    default: true
+
+stages:
+  - stage: Rollback_${{ parameters.targetEnvironment }}
+    displayName: 'Rollback ${{ upper(parameters.targetEnvironment) }}'
+    dependsOn: ${{ parameters.dependsOn }}
+    condition: ${{ parameters.triggerCondition }}
+    variables:
+      - template: ../variables/common-variables.yml
+      - template: ../variables/environment-variables.yml
+        parameters:
+          environment: ${{ parameters.targetEnvironment }}
+    
+    jobs:
+      - job: RollbackContent
+        displayName: 'Rollback BOBJ Content'
+        pool: $(agentPool)
+        timeoutInMinutes: $(importTimeout)
+        
+        steps:
+          - checkout: self
+            clean: true
+            
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download Backup Artifact'
+            inputs:
+              buildType: 'current'
+              artifactName: '${{ parameters.backupArtifactName }}'
+              targetPath: '$(Pipeline.Workspace)/backup'
+              
+          - task: AzureKeyVault@2
+            displayName: 'Fetch BOBJ Credentials'
+            inputs:
+              azureSubscription: $(serviceConnectionName)
+              KeyVaultName: $(keyVaultName)
+              SecretsFilter: 'bobj-username,bobj-password'
+              RunAsPreJob: true
+              
+          - task: PowerShell@2
+            displayName: 'Execute Rollback'
+            inputs:
+              targetType: 'filePath'
+              filePath: '$(powershellScriptsPath)/Invoke-BOBJRollback.ps1'
+              arguments: >
+                -ServerUrl "$(bobjServerUrl)"
+                -CmsServer "$(bobjCmsServer)"
+                -Username "$(bobj-username)"
+                -Password "$(bobj-password)"
+                -BackupPath "$(Pipeline.Workspace)/backup"
+                -VerboseLogging:$(verboseLogging)
+              pwsh: true
+              
+          - task: PowerShell@2
+            displayName: 'Verify Rollback'
+            inputs:
+              targetType: 'inline'
+              script: |
+                Write-Host "Verifying rollback for ${{ parameters.targetEnvironment }}..."
+                
+                # Verify rollback was successful
+                & "$(powershellScriptsPath)/Validate-LCMBIARPackage.ps1" `
+                  -ServerUrl "$(bobjServerUrl)" `
+                  -CmsServer "$(bobjCmsServer)" `
+                  -Username "$(bobj-username)" `
+                  -Password "$(bobj-password)" `
+                  -VerifyDeployment
+                  
+                if ($LASTEXITCODE -eq 0) {
+                  Write-Host "Rollback verification successful"
+                } else {
+                  Write-Host "##vso[task.logissue type=warning]Rollback verification had issues"
+                }
+              pwsh: true
+              
+          - ${{ if parameters.sendNotification }}:
+            - task: PowerShell@2
+              displayName: 'Send Rollback Notification'
+              inputs:
+                targetType: 'inline'
+                script: |
+                  $notification = @{
+                    Title = "BOBJ Rollback Executed"
+                    Environment = "${{ parameters.targetEnvironment }}"
+                    BuildId = "$(Build.BuildId)"
+                    Pipeline = "$(Build.DefinitionName)"
+                    Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                    Status = "Rollback Completed"
+                    Message = "Deployment to ${{ parameters.targetEnvironment }} failed and has been rolled back."
+                  }
+                  
+                  # Send Teams notification if webhook URL is configured
+                  $teamsWebhook = $env:TEAMS_WEBHOOK_URL
+                  if ($teamsWebhook) {
+                    $teamsPayload = @{
+                      "@type" = "MessageCard"
+                      "@context" = "http://schema.org/extensions"
+                      "themeColor" = "FF0000"
+                      "summary" = $notification.Title
+                      "sections" = @(
+                        @{
+                          "activityTitle" = $notification.Title
+                          "facts" = @(
+                            @{ "name" = "Environment"; "value" = $notification.Environment }
+                            @{ "name" = "Build ID"; "value" = $notification.BuildId }
+                            @{ "name" = "Status"; "value" = $notification.Status }
+                          )
+                          "text" = $notification.Message
+                        }
+                      )
+                    }
+                    
+                    Invoke-RestMethod -Uri $teamsWebhook -Method Post -Body ($teamsPayload | ConvertTo-Json -Depth 10) -ContentType 'application/json'
+                    Write-Host "Teams notification sent"
+                  }
+                pwsh: true
+              env:
+                TEAMS_WEBHOOK_URL: $(teamsWebhookUrl)
+              continueOnError: true
+              
+          - task: PowerShell@2
+            displayName: 'Generate Rollback Report'
+            inputs:
+              targetType: 'inline'
+              script: |
+                $rollbackReport = @{
+                  BuildId = "$(Build.BuildId)"
+                  TargetEnvironment = "${{ parameters.targetEnvironment }}"
+                  BackupArtifact = "${{ parameters.backupArtifactName }}"
+                  Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                  Status = "Rollback Completed"
+                }
+                $rollbackReport | ConvertTo-Json | Out-File "$(Build.ArtifactStagingDirectory)/rollback-report.json"
+              pwsh: true
+              
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Rollback Report'
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)/rollback-report.json'
+              artifact: 'rollback-report-${{ parameters.targetEnvironment }}-$(Build.BuildId)'
+              publishLocation: 'pipeline'
+            condition: always()

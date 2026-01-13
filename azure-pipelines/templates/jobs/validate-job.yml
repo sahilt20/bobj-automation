@@ -1,0 +1,79 @@
+# Job Template: Validate LCMBIAR Package
+# Reusable job for validating LCMBIAR packages
+
+parameters:
+  - name: artifactPath
+    type: string
+  - name: checkStructure
+    type: boolean
+    default: true
+  - name: checkDependencies
+    type: boolean
+    default: true
+  - name: runSecurityScan
+    type: boolean
+    default: true
+
+jobs:
+  - job: ValidateLCMBIAR
+    displayName: 'Validate LCMBIAR Job'
+    pool:
+      vmImage: 'ubuntu-latest'
+    
+    steps:
+      - task: UsePythonVersion@0
+        displayName: 'Setup Python'
+        inputs:
+          versionSpec: '3.10'
+          addToPath: true
+          
+      - script: |
+          pip install -r $(Build.SourcesDirectory)/scripts/python/requirements.txt
+        displayName: 'Install Python Dependencies'
+        
+      - ${{ if parameters.checkStructure }}:
+        - task: PythonScript@0
+          displayName: 'Validate Package Structure'
+          inputs:
+            scriptSource: 'filePath'
+            scriptPath: '$(Build.SourcesDirectory)/scripts/python/lcmbiar_validator.py'
+            arguments: >
+              --input "${{ parameters.artifactPath }}"
+              --check-structure
+              --check-manifest
+              
+      - ${{ if parameters.checkDependencies }}:
+        - task: PythonScript@0
+          displayName: 'Check Dependencies'
+          inputs:
+            scriptSource: 'filePath'
+            scriptPath: '$(Build.SourcesDirectory)/scripts/python/lcmbiar_validator.py'
+            arguments: >
+              --input "${{ parameters.artifactPath }}"
+              --check-dependencies
+              
+      - ${{ if parameters.runSecurityScan }}:
+        - task: PowerShell@2
+          displayName: 'Security Scan'
+          inputs:
+            targetType: 'inline'
+            script: |
+              $sensitivePatterns = @('password', 'secret', 'api.?key', 'token')
+              $violations = 0
+              
+              Get-ChildItem -Path "${{ parameters.artifactPath }}" -Recurse -File | ForEach-Object {
+                $content = Get-Content $_.FullName -Raw -ErrorAction SilentlyContinue
+                foreach ($pattern in $sensitivePatterns) {
+                  if ($content -match $pattern) {
+                    Write-Host "##vso[task.logissue type=warning]Potential sensitive data in: $($_.Name)"
+                    $violations++
+                  }
+                }
+              }
+              
+              if ($violations -gt 0) {
+                Write-Host "Found $violations potential security issues"
+              } else {
+                Write-Host "Security scan passed"
+              }
+            pwsh: true

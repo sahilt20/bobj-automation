@@ -1,0 +1,33 @@
+# Common Variables Template for BOBJ Transport CI/CD
+# This template contains shared variables across all pipelines
+
+variables:
+  # Artifact Settings
+  artifactName: 'bobj-lcmbiar'
+  artifactPath: '$(Build.ArtifactStagingDirectory)/lcmbiar'
+  
+  # Timeouts (in minutes)
+  exportTimeout: 30
+  importTimeout: 45
+  validationTimeout: 15
+  
+  # Retry Settings
+  maxRetryAttempts: 3
+  retryDelaySeconds: 30
+  
+  # Logging
+  verboseLogging: true
+  
+  # Script Paths
+  scriptsPath: '$(Build.SourcesDirectory)/scripts'
+  powershellScriptsPath: '$(Build.SourcesDirectory)/scripts/powershell'
+  pythonScriptsPath: '$(Build.SourcesDirectory)/scripts/python'
+  configPath: '$(Build.SourcesDirectory)/config'
+  
+  # BOBJ SDK Settings
+  bobjSdkPath: '/opt/sap/bobj/sdk'
+  javaHome: '/usr/lib/jvm/java-11-openjdk'
+  
+  # Notification Settings
+  enableTeamsNotification: true
+  enableEmailNotification: true

@@ -1,0 +1,46 @@
+{
+    "defaultSettings": {
+        "includeSecurityRights": true,
+        "includeDependencies": true,
+        "includeConnections": true,
+        "includeUniverses": true
+    },
+    "conflictResolution": {
+        "default": "UpdateExisting",
+        "options": {
+            "UpdateExisting": "Overwrite existing objects with same CUID",
+            "SkipExisting": "Keep existing objects, skip duplicates",
+            "RenameNew": "Rename incoming objects to avoid conflicts",
+            "Fail": "Fail the promotion if conflicts exist"
+        }
+    },
+    "securityOptions": {
+        "overwriteSecurityOnImport": false,
+        "preserveOwnership": true,
+        "applyTargetSecurity": false
+    },
+    "objectTypes": {
+        "include": [
+            "Report",
+            "Universe",
+            "Connection",
+            "Folder",
+            "Category",
+            "Publication"
+        ],
+        "exclude": [
+            "Inbox",
+            "PersonalCategory"
+        ]
+    },
+    "retry": {
+        "maxAttempts": 3,
+        "delaySeconds": 30,
+        "exponentialBackoff": true
+    },
+    "jobSettings": {
+        "maxConcurrentJobs": 1,
+        "jobPollingIntervalSeconds": 5,
+        "jobTimeoutMinutes": 60
+    }
+}

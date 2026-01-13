@@ -1,0 +1,56 @@
+# Job Template: Export BOBJ Content
+# Reusable job for exporting BOBJ content to LCMBIAR
+
+parameters:
+  - name: serverUrl
+    type: string
+  - name: cmsServer
+    type: string
+  - name: keyVaultName
+    type: string
+  - name: serviceConnection
+    type: string
+  - name: exportFolder
+    type: string
+    default: '/Public Folders'
+  - name: outputPath
+    type: string
+  - name: includeSecurityRights
+    type: boolean
+    default: true
+  - name: includeDependencies
+    type: boolean
+    default: true
+  - name: agentPool
+    type: string
+    default: 'Default'
+
+jobs:
+  - job: ExportBOBJContent
+    displayName: 'Export BOBJ Content Job'
+    pool: ${{ parameters.agentPool }}
+    
+    steps:
+      - task: AzureKeyVault@2
+        displayName: 'Fetch Credentials from Key Vault'
+        inputs:
+          azureSubscription: ${{ parameters.serviceConnection }}
+          KeyVaultName: ${{ parameters.keyVaultName }}
+          SecretsFilter: 'bobj-username,bobj-password'
+          RunAsPreJob: true
+          
+      - task: PowerShell@2
+        displayName: 'Export BOBJ Content'
+        inputs:
+          targetType: 'filePath'
+          filePath: '$(Build.SourcesDirectory)/scripts/powershell/Export-BOBJContent.ps1'
+          arguments: >
+            -ServerUrl "${{ parameters.serverUrl }}"
+            -CmsServer "${{ parameters.cmsServer }}"
+            -Username "$(bobj-username)"
+            -Password "$(bobj-password)"
+            -ExportFolder "${{ parameters.exportFolder }}"
+            -OutputPath "${{ parameters.outputPath }}"
+            -IncludeSecurityRights:$${{ parameters.includeSecurityRights }}
+            -IncludeDependencies:$${{ parameters.includeDependencies }}
+          pwsh: true

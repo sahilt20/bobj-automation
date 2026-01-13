@@ -1,0 +1,41 @@
+{
+    "name": "Development",
+    "description": "SAP BusinessObjects Development Environment",
+    "server": {
+        "url": "http://bobj-dev.example.com:8080",
+        "cms": {
+            "host": "bobj-dev-cms.example.com",
+            "port": 6400,
+            "cluster": "DEV_CLUSTER"
+        }
+    },
+    "authentication": {
+        "type": "secEnterprise",
+        "keyVault": "kv-bobj-dev",
+        "usernameSecret": "bobj-username",
+        "passwordSecret": "bobj-password"
+    },
+    "settings": {
+        "defaultExportFolder": "/Public Folders",
+        "includeSecurityRights": true,
+        "includeDependencies": true,
+        "conflictResolution": "UpdateExisting",
+        "exportTimeout": 30,
+        "importTimeout": 45
+    },
+    "approval": {
+        "required": false,
+        "timeout": 0
+    },
+    "notifications": {
+        "teams": {
+            "enabled": true,
+            "webhookSecretName": "teams-webhook-dev"
+        },
+        "email": {
+            "enabled": false,
+            "recipients": []
+        }
+    },
+    "agentPool": "BOBJ-Dev-Agents"
+}

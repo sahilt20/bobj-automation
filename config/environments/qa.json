@@ -1,0 +1,47 @@
+{
+    "name": "Quality Assurance",
+    "description": "SAP BusinessObjects QA/Staging Environment",
+    "server": {
+        "url": "http://bobj-qa.example.com:8080",
+        "cms": {
+            "host": "bobj-qa-cms.example.com",
+            "port": 6400,
+            "cluster": "QA_CLUSTER"
+        }
+    },
+    "authentication": {
+        "type": "secEnterprise",
+        "keyVault": "kv-bobj-qa",
+        "usernameSecret": "bobj-username",
+        "passwordSecret": "bobj-password"
+    },
+    "settings": {
+        "defaultExportFolder": "/Public Folders",
+        "includeSecurityRights": true,
+        "includeDependencies": true,
+        "conflictResolution": "UpdateExisting",
+        "exportTimeout": 30,
+        "importTimeout": 60
+    },
+    "approval": {
+        "required": true,
+        "timeout": 1440,
+        "minimumApprovers": 1,
+        "approverGroups": [
+            "BOBJ-QA-Approvers"
+        ]
+    },
+    "notifications": {
+        "teams": {
+            "enabled": true,
+            "webhookSecretName": "teams-webhook-qa"
+        },
+        "email": {
+            "enabled": true,
+            "recipients": [
+                "qa-team@example.com"
+            ]
+        }
+    },
+    "agentPool": "BOBJ-QA-Agents"
+}

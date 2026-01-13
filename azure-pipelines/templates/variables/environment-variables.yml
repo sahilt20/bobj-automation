@@ -1,0 +1,53 @@
+# Environment Variables Template for BOBJ Transport CI/CD
+# This template provides environment-specific configurations
+
+parameters:
+  - name: environment
+    type: string
+    default: 'dev'
+    values:
+      - dev
+      - qa
+      - prod
+
+variables:
+  # Environment Name
+  environmentName: ${{ parameters.environment }}
+  
+  # Key Vault Reference (for secrets)
+  keyVaultName: 'kv-bobj-${{ parameters.environment }}'
+  
+  # BOBJ Server Configuration
+  ${{ if eq(parameters.environment, 'dev') }}:
+    bobjServerUrl: 'http://bobj-dev.example.com:8080'
+    bobjCmsServer: 'bobj-dev-cms.example.com'
+    bobjCmsPort: '6400'
+    bobjCluster: 'DEV_CLUSTER'
+    bobjAuthType: 'secEnterprise'
+    serviceConnectionName: 'bobj-dev-connection'
+    agentPool: 'BOBJ-Dev-Agents'
+    approvalRequired: false
+    approvalTimeout: 0
+    
+  ${{ if eq(parameters.environment, 'qa') }}:
+    bobjServerUrl: 'http://bobj-qa.example.com:8080'
+    bobjCmsServer: 'bobj-qa-cms.example.com'
+    bobjCmsPort: '6400'
+    bobjCluster: 'QA_CLUSTER'
+    bobjAuthType: 'secEnterprise'
+    serviceConnectionName: 'bobj-qa-connection'
+    agentPool: 'BOBJ-QA-Agents'
+    approvalRequired: true
+    approvalTimeout: 1440  # 24 hours
+    
+  ${{ if eq(parameters.environment, 'prod') }}:
+    bobjServerUrl: 'http://bobj-prod.example.com:8080'
+    bobjCmsServer: 'bobj-prod-cms.example.com'
+    bobjCmsPort: '6400'
+    bobjCluster: 'PROD_CLUSTER'
+    bobjAuthType: 'secEnterprise'
+    serviceConnectionName: 'bobj-prod-connection'
+    agentPool: 'BOBJ-Prod-Agents'
+    approvalRequired: true
+    approvalTimeout: 2880  # 48 hours
+    minimumApprovers: 2

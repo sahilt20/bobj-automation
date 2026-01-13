@@ -1,0 +1,139 @@
+# Validate Stage Template for BOBJ LCMBIAR Package
+# Validates the exported LCMBIAR package before deployment
+
+parameters:
+  - name: artifactName
+    type: string
+  - name: runSecurityScan
+    type: boolean
+    default: true
+  - name: checkDependencies
+    type: boolean
+    default: true
+  - name: validateObjectCount
+    type: boolean
+    default: true
+
+stages:
+  - stage: Validate
+    displayName: 'Validate LCMBIAR Package'
+    dependsOn: []
+    variables:
+      - template: ../variables/common-variables.yml
+    
+    jobs:
+      - job: ValidatePackage
+        displayName: 'Validate LCMBIAR'
+        pool:
+          vmImage: 'ubuntu-latest'
+        timeoutInMinutes: $(validationTimeout)
+        
+        steps:
+          - checkout: self
+            clean: true
+            
+          - task: DownloadPipelineArtifact@2
+            displayName: 'Download LCMBIAR Artifact'
+            inputs:
+              buildType: 'current'
+              artifactName: '${{ parameters.artifactName }}'
+              targetPath: '$(Pipeline.Workspace)/lcmbiar'
+              
+          - task: UsePythonVersion@0
+            displayName: 'Setup Python'
+            inputs:
+              versionSpec: '3.10'
+              addToPath: true
+              
+          - script: |
+              pip install -r $(pythonScriptsPath)/requirements.txt
+            displayName: 'Install Python Dependencies'
+            
+          - task: PythonScript@0
+            displayName: 'Validate LCMBIAR Structure'
+            inputs:
+              scriptSource: 'filePath'
+              scriptPath: '$(pythonScriptsPath)/lcmbiar_validator.py'
+              arguments: >
+                --input "$(Pipeline.Workspace)/lcmbiar"
+                --check-structure
+                --check-manifest
+                --output "$(Build.ArtifactStagingDirectory)/validation-report.json"
+                
+          - ${{ if parameters.checkDependencies }}:
+            - task: PythonScript@0
+              displayName: 'Check Object Dependencies'
+              inputs:
+                scriptSource: 'filePath'
+                scriptPath: '$(pythonScriptsPath)/lcmbiar_validator.py'
+                arguments: >
+                  --input "$(Pipeline.Workspace)/lcmbiar"
+                  --check-dependencies
+                  --fail-on-missing
+                  
+          - ${{ if parameters.runSecurityScan }}:
+            - task: PowerShell@2
+              displayName: 'Security Scan'
+              inputs:
+                targetType: 'inline'
+                script: |
+                  Write-Host "Performing security scan on LCMBIAR package..."
+                  
+                  # Check for sensitive data patterns
+                  $sensitivePatterns = @(
+                    'password\s*[:=]',
+                    'secret\s*[:=]',
+                    'api[_-]?key\s*[:=]',
+                    'connection[_-]?string\s*[:=]'
+                  )
+                  
+                  $violations = @()
+                  $files = Get-ChildItem -Path "$(Pipeline.Workspace)/lcmbiar" -Recurse -File
+                  
+                  foreach ($file in $files) {
+                    $content = Get-Content $file.FullName -Raw -ErrorAction SilentlyContinue
+                    if ($content) {
+                      foreach ($pattern in $sensitivePatterns) {
+                        if ($content -match $pattern) {
+                          $violations += @{
+                            File = $file.Name
+                            Pattern = $pattern
+                          }
+                        }
+                      }
+                    }
+                  }
+                  
+                  if ($violations.Count -gt 0) {
+                    Write-Host "##vso[task.logissue type=warning]Security scan found potential sensitive data"
+                    $violations | ForEach-Object { Write-Host "  - $($_.File): matched pattern $($_.Pattern)" }
+                  } else {
+                    Write-Host "Security scan passed - no sensitive data patterns detected"
+                  }
+                pwsh: true
+                
+          - ${{ if parameters.validateObjectCount }}:
+            - task: PowerShell@2
+              displayName: 'Validate Object Count'
+              inputs:
+                targetType: 'inline'
+                script: |
+                  $reportPath = "$(Build.ArtifactStagingDirectory)/validation-report.json"
+                  if (Test-Path $reportPath) {
+                    $report = Get-Content $reportPath | ConvertFrom-Json
+                    Write-Host "Objects in package: $($report.objectCount)"
+                    
+                    if ($report.objectCount -eq 0) {
+                      Write-Host "##vso[task.logissue type=error]LCMBIAR package contains no objects"
+                      exit 1
+                    }
+                  }
+                pwsh: true
+                
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Validation Report'
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)/validation-report.json'
+              artifact: 'validation-report-$(Build.BuildId)'
+              publishLocation: 'pipeline'
+            condition: always()

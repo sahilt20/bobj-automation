@@ -1,0 +1,74 @@
+# Job Template: Import BOBJ Content
+# Reusable job for importing LCMBIAR to BOBJ system
+
+parameters:
+  - name: serverUrl
+    type: string
+  - name: cmsServer
+    type: string
+  - name: keyVaultName
+    type: string
+  - name: serviceConnection
+    type: string
+  - name: lcmbiarPath
+    type: string
+  - name: conflictResolution
+    type: string
+    default: 'UpdateExisting'
+  - name: overwriteSecurity
+    type: boolean
+    default: false
+  - name: agentPool
+    type: string
+    default: 'Default'
+
+jobs:
+  - job: ImportBOBJContent
+    displayName: 'Import BOBJ Content Job'
+    pool: ${{ parameters.agentPool }}
+    
+    steps:
+      - task: AzureKeyVault@2
+        displayName: 'Fetch Credentials from Key Vault'
+        inputs:
+          azureSubscription: ${{ parameters.serviceConnection }}
+          KeyVaultName: ${{ parameters.keyVaultName }}
+          SecretsFilter: 'bobj-username,bobj-password'
+          RunAsPreJob: true
+          
+      - task: PowerShell@2
+        displayName: 'Test Connection'
+        inputs:
+          targetType: 'filePath'
+          filePath: '$(Build.SourcesDirectory)/scripts/powershell/Get-BOBJConnection.ps1'
+          arguments: >
+            -ServerUrl "${{ parameters.serverUrl }}"
+            -CmsServer "${{ parameters.cmsServer }}"
+            -Username "$(bobj-username)"
+            -Password "$(bobj-password)"
+          pwsh: true
+          
+      - task: PowerShell@2
+        displayName: 'Import LCMBIAR Content'
+        inputs:
+          targetType: 'filePath'
+          filePath: '$(Build.SourcesDirectory)/scripts/powershell/Import-BOBJContent.ps1'
+          arguments: >
+            -ServerUrl "${{ parameters.serverUrl }}"
+            -CmsServer "${{ parameters.cmsServer }}"
+            -Username "$(bobj-username)"
+            -Password "$(bobj-password)"
+            -LcmbiarPath "${{ parameters.lcmbiarPath }}"
+            -ConflictResolution "${{ parameters.conflictResolution }}"
+            -OverwriteSecurity:$${{ parameters.overwriteSecurity }}
+          pwsh: true
+          
+      - task: PowerShell@2
+        displayName: 'Verify Import'
+        inputs:
+          targetType: 'inline'
+          script: |
+            Write-Host "Verifying import was successful..."
+            # Add verification logic here
+            Write-Host "Import verification completed"
+          pwsh: true

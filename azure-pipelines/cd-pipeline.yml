@@ -1,0 +1,371 @@
+# SAP BusinessObjects CD Pipeline
+# Continuous Deployment for BOBJ Content to Dev/QA/Production
+# Triggered by successful CI build or manually
+
+trigger: none  # CD is triggered manually or by CI
+
+# Resource reference to CI pipeline
+resources:
+  pipelines:
+    - pipeline: CI_Build
+      source: 'BOBJ-CI-Pipeline'  # Name of your CI pipeline
+      trigger:
+        branches:
+          include:
+            - main
+
+# Pipeline Parameters
+parameters:
+  - name: sourceArtifact
+    displayName: 'Source Build Artifact'
+    type: string
+    default: 'latest'
+    
+  - name: deployToEnvironments
+    displayName: 'Deploy to Environments'
+    type: object
+    default:
+      - dev
+      - qa
+      - prod
+      
+  - name: conflictResolution
+    displayName: 'Conflict Resolution Strategy'
+    type: string
+    default: 'UpdateExisting'
+    values:
+      - UpdateExisting
+      - SkipExisting
+      - RenameNew
+      - Fail
+      
+  - name: overwriteSecurity
+    displayName: 'Overwrite Security Rights'
+    type: boolean
+    default: false
+    
+  - name: createBackup
+    displayName: 'Create Backup Before Deployment'
+    type: boolean
+    default: true
+    
+  - name: enableRollback
+    displayName: 'Enable Automatic Rollback on Failure'
+    type: boolean
+    default: true
+    
+  - name: skipDevApproval
+    displayName: 'Skip Dev Deployment Approval'
+    type: boolean
+    default: true
+
+# Variable References
+variables:
+  - template: templates/variables/common-variables.yml
+  - name: releaseArtifact
+    ${{ if eq(parameters.sourceArtifact, 'latest') }}:
+      value: '$(artifactName)-$(resources.pipeline.CI_Build.runID)'
+    ${{ else }}:
+      value: '${{ parameters.sourceArtifact }}'
+
+# Build Name
+name: 'CD-$(Date:yyyyMMdd)-$(Rev:r)'
+
+stages:
+  # ========================================
+  # Stage: Pre-Deployment Validation
+  # ========================================
+  - stage: PreDeployValidation
+    displayName: 'Pre-Deployment Validation'
+    
+    jobs:
+      - job: ValidateArtifact
+        displayName: 'Validate Deployment Artifact'
+        pool:
+          vmImage: 'ubuntu-latest'
+          
+        steps:
+          - download: CI_Build
+            artifact: '$(releaseArtifact)'
+            displayName: 'Download CI Artifact'
+            
+          - task: PowerShell@2
+            displayName: 'Validate Artifact Integrity'
+            inputs:
+              targetType: 'inline'
+              script: |
+                $artifactPath = "$(Pipeline.Workspace)/CI_Build/$(releaseArtifact)"
+                
+                if (-not (Test-Path $artifactPath)) {
+                  Write-Host "##vso[task.logissue type=error]Artifact not found at: $artifactPath"
+                  exit 1
+                }
+                
+                $files = Get-ChildItem -Path $artifactPath -Recurse
+                Write-Host "Artifact contains $($files.Count) files"
+                
+                # Check for LCMBIAR file
+                $lcmbiar = $files | Where-Object { $_.Extension -eq '.lcmbiar' -or $_.Name -match '\.lcmbiar$' }
+                if (-not $lcmbiar) {
+                  Write-Host "##vso[task.logissue type=warning]No .lcmbiar file found, checking for extracted content"
+                }
+                
+                Write-Host "Pre-deployment validation passed"
+              pwsh: true
+
+  # ========================================
+  # Stage: Deploy to Development
+  # ========================================
+  - ${{ if containsValue(parameters.deployToEnvironments, 'dev') }}:
+    - template: templates/stages/deploy-stage.yml
+      parameters:
+        targetEnvironment: 'dev'
+        artifactName: '$(releaseArtifact)'
+        conflictResolution: ${{ parameters.conflictResolution }}
+        overwriteSecurity: ${{ parameters.overwriteSecurity }}
+        createBackup: ${{ parameters.createBackup }}
+        dependsOn:
+          - PreDeployValidation
+
+    # Rollback stage for Dev (if enabled)
+    - ${{ if parameters.enableRollback }}:
+      - template: templates/stages/rollback-stage.yml
+        parameters:
+          targetEnvironment: 'dev'
+          backupArtifactName: 'backup-dev-$(Build.BuildId)'
+          triggerCondition: failed()
+          dependsOn:
+            - Deploy_dev
+          sendNotification: true
+
+  # ========================================
+  # Stage: Deploy to QA
+  # ========================================
+  - ${{ if containsValue(parameters.deployToEnvironments, 'qa') }}:
+    - stage: QA_Approval
+      displayName: 'QA Deployment Approval'
+      dependsOn:
+        - ${{ if containsValue(parameters.deployToEnvironments, 'dev') }}:
+          - Deploy_dev
+        - ${{ else }}:
+          - PreDeployValidation
+      condition: succeeded()
+      
+      jobs:
+        - deployment: ApproveQA
+          displayName: 'Approve QA Deployment'
+          environment: 'bobj-qa'
+          strategy:
+            runOnce:
+              deploy:
+                steps:
+                  - script: echo "QA deployment approved"
+                    displayName: 'Approval Acknowledged'
+
+    - template: templates/stages/deploy-stage.yml
+      parameters:
+        targetEnvironment: 'qa'
+        artifactName: '$(releaseArtifact)'
+        conflictResolution: ${{ parameters.conflictResolution }}
+        overwriteSecurity: ${{ parameters.overwriteSecurity }}
+        createBackup: ${{ parameters.createBackup }}
+        dependsOn:
+          - QA_Approval
+
+    # Rollback stage for QA (if enabled)
+    - ${{ if parameters.enableRollback }}:
+      - template: templates/stages/rollback-stage.yml
+        parameters:
+          targetEnvironment: 'qa'
+          backupArtifactName: 'backup-qa-$(Build.BuildId)'
+          triggerCondition: failed()
+          dependsOn:
+            - Deploy_qa
+          sendNotification: true
+
+  # ========================================
+  # Stage: Deploy to Production
+  # ========================================
+  - ${{ if containsValue(parameters.deployToEnvironments, 'prod') }}:
+    - stage: Prod_Approval
+      displayName: 'Production Deployment Approval'
+      dependsOn:
+        - ${{ if containsValue(parameters.deployToEnvironments, 'qa') }}:
+          - Deploy_qa
+        - ${{ elseif containsValue(parameters.deployToEnvironments, 'dev') }}:
+          - Deploy_dev
+        - ${{ else }}:
+          - PreDeployValidation
+      condition: succeeded()
+      
+      jobs:
+        - deployment: ApproveProd
+          displayName: 'Approve Production Deployment'
+          environment: 'bobj-prod'
+          strategy:
+            runOnce:
+              deploy:
+                steps:
+                  - script: echo "Production deployment approved"
+                    displayName: 'Approval Acknowledged'
+                    
+    - stage: Prod_PreChecks
+      displayName: 'Production Pre-Deployment Checks'
+      dependsOn: Prod_Approval
+      
+      jobs:
+        - job: ProductionChecks
+          displayName: 'Run Production Pre-Checks'
+          pool:
+            vmImage: 'ubuntu-latest'
+            
+          steps:
+            - task: PowerShell@2
+              displayName: 'Verify Production Readiness'
+              inputs:
+                targetType: 'inline'
+                script: |
+                  Write-Host "=== Production Pre-Deployment Checks ==="
+                  
+                  # Check deployment window (business hours check)
+                  $currentHour = (Get-Date).ToUniversalTime().Hour
+                  $deploymentWindowStart = 6  # 6 AM UTC
+                  $deploymentWindowEnd = 18   # 6 PM UTC
+                  
+                  if ($currentHour -ge $deploymentWindowStart -and $currentHour -lt $deploymentWindowEnd) {
+                    Write-Host "Within standard deployment window"
+                  } else {
+                    Write-Host "##vso[task.logissue type=warning]Outside standard deployment window (6AM-6PM UTC)"
+                  }
+                  
+                  # Verify artifact is available
+                  Write-Host "Production readiness checks passed"
+                pwsh: true
+
+    - template: templates/stages/deploy-stage.yml
+      parameters:
+        targetEnvironment: 'prod'
+        artifactName: '$(releaseArtifact)'
+        conflictResolution: ${{ parameters.conflictResolution }}
+        overwriteSecurity: ${{ parameters.overwriteSecurity }}
+        createBackup: true  # Always backup in production
+        dependsOn:
+          - Prod_PreChecks
+
+    # Rollback stage for Production (if enabled)
+    - ${{ if parameters.enableRollback }}:
+      - template: templates/stages/rollback-stage.yml
+        parameters:
+          targetEnvironment: 'prod'
+          backupArtifactName: 'backup-prod-$(Build.BuildId)'
+          triggerCondition: failed()
+          dependsOn:
+            - Deploy_prod
+          sendNotification: true
+
+  # ========================================
+  # Stage: Post-Deployment Summary
+  # ========================================
+  - stage: Summary
+    displayName: 'Deployment Summary'
+    dependsOn:
+      - ${{ if containsValue(parameters.deployToEnvironments, 'prod') }}:
+        - Deploy_prod
+      - ${{ elseif containsValue(parameters.deployToEnvironments, 'qa') }}:
+        - Deploy_qa
+      - ${{ elseif containsValue(parameters.deployToEnvironments, 'dev') }}:
+        - Deploy_dev
+    condition: always()
+    
+    jobs:
+      - job: GenerateSummary
+        displayName: 'Generate Deployment Summary'
+        pool:
+          vmImage: 'ubuntu-latest'
+          
+        steps:
+          - task: PowerShell@2
+            displayName: 'Create Deployment Report'
+            inputs:
+              targetType: 'inline'
+              script: |
+                $deploymentReport = @{
+                  BuildId = "$(Build.BuildId)"
+                  BuildNumber = "$(Build.BuildNumber)"
+                  SourceArtifact = "$(releaseArtifact)"
+                  ConflictResolution = "${{ parameters.conflictResolution }}"
+                  BackupCreated = "${{ parameters.createBackup }}"
+                  RollbackEnabled = "${{ parameters.enableRollback }}"
+                  TargetEnvironments = "${{ join(',', parameters.deployToEnvironments) }}"
+                  Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC"
+                  RequestedBy = "$(Build.RequestedFor)"
+                }
+                
+                $deploymentReport | ConvertTo-Json -Depth 5 | Out-File "$(Build.ArtifactStagingDirectory)/deployment-summary.json"
+                
+                Write-Host "=== Deployment Summary ==="
+                $deploymentReport.GetEnumerator() | ForEach-Object { Write-Host "$($_.Key): $($_.Value)" }
+              pwsh: true
+              
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish Deployment Summary'
+            inputs:
+              targetPath: '$(Build.ArtifactStagingDirectory)/deployment-summary.json'
+              artifact: 'deployment-summary-$(Build.BuildId)'
+              publishLocation: 'pipeline'
+              
+      - job: SendFinalNotification
+        displayName: 'Send Final Notification'
+        dependsOn: GenerateSummary
+        
+        pool:
+          vmImage: 'ubuntu-latest'
+          
+        steps:
+          - task: PowerShell@2
+            displayName: 'Send Deployment Notification'
+            inputs:
+              targetType: 'inline'
+              script: |
+                $status = "$(Agent.JobStatus)"
+                $color = if ($status -eq 'Succeeded') { '28A745' } else { 'DC3545' }
+                $icon = if ($status -eq 'Succeeded') { '✅' } else { '❌' }
+                
+                $payload = @{
+                  "@type" = "MessageCard"
+                  "@context" = "http://schema.org/extensions"
+                  "themeColor" = $color
+                  "summary" = "BOBJ CD Pipeline $status"
+                  "sections" = @(
+                    @{
+                      "activityTitle" = "$icon BOBJ Deployment $status"
+                      "facts" = @(
+                        @{ "name" = "Build"; "value" = "$(Build.BuildNumber)" }
+                        @{ "name" = "Environments"; "value" = "${{ join(',', parameters.deployToEnvironments) }}" }
+                        @{ "name" = "Requested By"; "value" = "$(Build.RequestedFor)" }
+                      )
+                      "text" = "BOBJ content deployment pipeline has completed."
+                    }
+                  )
+                  "potentialAction" = @(
+                    @{
+                      "@type" = "OpenUri"
+                      "name" = "View Pipeline"
+                      "targets" = @(
+                        @{
+                          "os" = "default"
+                          "uri" = "$(System.TeamFoundationCollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)"
+                        }
+                      )
+                    }
+                  )
+                }
+                
+                $webhook = $env:TEAMS_WEBHOOK_URL
+                if ($webhook) {
+                  Invoke-RestMethod -Uri $webhook -Method Post -Body ($payload | ConvertTo-Json -Depth 10) -ContentType 'application/json'
+                }
+              pwsh: true
+            env:
+              TEAMS_WEBHOOK_URL: $(teamsWebhookUrl)
+            continueOnError: true

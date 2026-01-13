@@ -1,0 +1,114 @@
+# Job Template: Send Notifications
+# Reusable job for sending pipeline notifications
+
+parameters:
+  - name: notificationType
+    type: string
+    default: 'info'
+    values:
+      - info
+      - success
+      - warning
+      - error
+  - name: title
+    type: string
+  - name: message
+    type: string
+  - name: environment
+    type: string
+    default: ''
+  - name: sendToTeams
+    type: boolean
+    default: true
+  - name: sendEmail
+    type: boolean
+    default: false
+  - name: emailRecipients
+    type: string
+    default: ''
+
+jobs:
+  - job: SendNotification
+    displayName: 'Send Notification'
+    pool:
+      vmImage: 'ubuntu-latest'
+    
+    steps:
+      - ${{ if parameters.sendToTeams }}:
+        - task: PowerShell@2
+          displayName: 'Send Teams Notification'
+          inputs:
+            targetType: 'inline'
+            script: |
+              $themeColors = @{
+                'info' = '0078D7'
+                'success' = '28A745'
+                'warning' = 'FFC107'
+                'error' = 'DC3545'
+              }
+              
+              $payload = @{
+                "@type" = "MessageCard"
+                "@context" = "http://schema.org/extensions"
+                "themeColor" = $themeColors['${{ parameters.notificationType }}']
+                "summary" = "${{ parameters.title }}"
+                "sections" = @(
+                  @{
+                    "activityTitle" = "${{ parameters.title }}"
+                    "facts" = @(
+                      @{ "name" = "Pipeline"; "value" = "$(Build.DefinitionName)" }
+                      @{ "name" = "Build"; "value" = "$(Build.BuildId)" }
+                      @{ "name" = "Branch"; "value" = "$(Build.SourceBranchName)" }
+                    )
+                    "text" = "${{ parameters.message }}"
+                  }
+                )
+                "potentialAction" = @(
+                  @{
+                    "@type" = "OpenUri"
+                    "name" = "View Pipeline"
+                    "targets" = @(
+                      @{
+                        "os" = "default"
+                        "uri" = "$(System.TeamFoundationCollectionUri)$(System.TeamProject)/_build/results?buildId=$(Build.BuildId)"
+                      }
+                    )
+                  }
+                )
+              }
+              
+              if ('${{ parameters.environment }}') {
+                $payload.sections[0].facts += @{ "name" = "Environment"; "value" = "${{ parameters.environment }}" }
+              }
+              
+              $teamsWebhook = $env:TEAMS_WEBHOOK_URL
+              if ($teamsWebhook) {
+                try {
+                  Invoke-RestMethod -Uri $teamsWebhook -Method Post -Body ($payload | ConvertTo-Json -Depth 10) -ContentType 'application/json'
+                  Write-Host "Teams notification sent successfully"
+                } catch {
+                  Write-Host "##vso[task.logissue type=warning]Failed to send Teams notification: $_"
+                }
+              } else {
+                Write-Host "##vso[task.logissue type=warning]Teams webhook URL not configured"
+              }
+            pwsh: true
+          env:
+            TEAMS_WEBHOOK_URL: $(teamsWebhookUrl)
+          continueOnError: true
+          
+      - ${{ if parameters.sendEmail }}:
+        - task: SendEmail@1
+          displayName: 'Send Email Notification'
+          inputs:
+            To: '${{ parameters.emailRecipients }}'
+            Subject: '[${{ parameters.notificationType }}] ${{ parameters.title }}'
+            Body: |
+              <h2>${{ parameters.title }}</h2>
+              <p>${{ parameters.message }}</p>
+              <p><strong>Pipeline:</strong> $(Build.DefinitionName)</p>
+              <p><strong>Build:</strong> $(Build.BuildId)</p>
+              <p><strong>Branch:</strong> $(Build.SourceBranchName)</p>
+              ${{ if parameters.environment }}:
+                <p><strong>Environment:</strong> ${{ parameters.environment }}</p>
+          continueOnError: true
