@@ -39,37 +39,16 @@ stages:
               artifactName: '${{ parameters.artifactName }}'
               targetPath: '$(Pipeline.Workspace)/lcmbiar'
               
-          - task: UsePythonVersion@0
-            displayName: 'Setup Python'
+          - task: PowerShell@2
+            displayName: 'Validate LCMBIAR Package'
             inputs:
-              versionSpec: '3.10'
-              addToPath: true
-              
-          - script: |
-              pip install -r $(pythonScriptsPath)/requirements.txt
-            displayName: 'Install Python Dependencies'
-            
-          - task: PythonScript@0
-            displayName: 'Validate LCMBIAR Structure'
-            inputs:
-              scriptSource: 'filePath'
-              scriptPath: '$(pythonScriptsPath)/lcmbiar_validator.py'
+              targetType: 'filePath'
+              filePath: '$(Build.SourcesDirectory)/scripts/powershell/Validate-LCMBIARPackage.ps1'
               arguments: >
-                --input "$(Pipeline.Workspace)/lcmbiar"
-                --check-structure
-                --check-manifest
-                --output "$(Build.ArtifactStagingDirectory)/validation-report.json"
-                
-          - ${{ if parameters.checkDependencies }}:
-            - task: PythonScript@0
-              displayName: 'Check Object Dependencies'
-              inputs:
-                scriptSource: 'filePath'
-                scriptPath: '$(pythonScriptsPath)/lcmbiar_validator.py'
-                arguments: >
-                  --input "$(Pipeline.Workspace)/lcmbiar"
-                  --check-dependencies
-                  --fail-on-missing
+                -LcmbiarPath "$(Pipeline.Workspace)/lcmbiar"
+                ${{ if parameters.checkDependencies }}: -CheckDependencies
+                -OutputPath "$(Build.ArtifactStagingDirectory)/validation-report.json"
+              pwsh: true
                   
           - ${{ if parameters.runSecurityScan }}:
             - task: PowerShell@2

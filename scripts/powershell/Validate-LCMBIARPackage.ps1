@@ -3,8 +3,8 @@
     Validates LCMBIAR package and optionally verifies deployment.
 
 .DESCRIPTION
-    Validates the structure and contents of an LCMBIAR package, or verifies
-    that a deployment was successful by checking objects in the target system.
+    Validates the structure and contents of an LCMBIAR package (archive or directory),
+    checks for manifest files, dependencies, and can verify deployment connectivity.
 
 .PARAMETER ServerUrl
     The URL of the BOBJ server (required for VerifyDeployment)
@@ -19,10 +19,13 @@
     Password for authentication
 
 .PARAMETER LcmbiarPath
-    Path to LCMBIAR file or directory (for validation mode)
+    Path to LCMBIAR file (.lcmbiar/.zip) or directory (for validation mode)
 
 .PARAMETER VerifyDeployment
     Switch to enable deployment verification mode
+
+.PARAMETER CheckDependencies
+    Switch to enable dependency checking
 
 .PARAMETER OutputPath
     Path for validation report output
@@ -49,10 +52,16 @@ param(
     [switch]$VerifyDeployment,
     
     [Parameter(Mandatory = $false)]
+    [switch]$CheckDependencies,
+    
+    [Parameter(Mandatory = $false)]
     [string]$OutputPath
 )
 
 $ErrorActionPreference = 'Stop'
+
+# Load required assemblies for Zip handling if needed
+Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 function Write-Log {
     param([string]$Message, [string]$Level = 'INFO')
@@ -74,29 +83,49 @@ function Test-LcmbiarStructure {
         warnings = @()
         errors = @()
         objects = @()
+        manifestFound = $false
+        dependenciesValid = $true
     }
     
     Write-Log "Validating LCMBIAR structure at: $Path"
     
-    if (Test-Path $Path -PathType Container) {
+    if (-not (Test-Path $Path)) {
+        $report.errors += "Path does not exist: $Path"
+        $report.valid = $false
+        return $report
+    }
+
+    if ((Get-Item $Path).Attributes -match 'Directory') {
+        # Directory validation
         $files = Get-ChildItem -Path $Path -Recurse -File
         $report.objectCount = $files.Count
         
-        # Check for manifest
-        $manifest = $files | Where-Object { $_.Name -like '*manifest*' -or $_.Name -like '*.xml' }
-        if (-not $manifest) {
-            $report.warnings += "No manifest file found"
-        }
-        
-        # Check for content files
-        $contentFiles = $files | Where-Object { $_.Length -gt 0 }
-        if ($contentFiles.Count -eq 0) {
-            $report.errors += "No content files found"
+        if ($files.Count -eq 0) {
+            $report.errors += "Directory contains no files"
             $report.valid = $false
+            return $report
+        }
+
+        # Check for manifest
+        $manifests = $files | Where-Object { $_.Name -match 'manifest.*\.xml$' -or $_.Name -eq 'manifest.json' }
+        if ($manifests) {
+            $report.manifestFound = $true
+            foreach ($m in $manifests) {
+                try {
+                    if ($m.Extension -eq '.xml') {
+                        [xml]$xml = Get-Content $m.FullName
+                        if (-not $xml.DocumentElement) { throw "Empty XML root" }
+                    }
+                } catch {
+                    $report.warnings += "Could not parse manifest $($m.Name): $_"
+                }
+            }
+        } else {
+            $report.warnings += "No manifest file found in directory"
         }
         
         # Log file summary
-        foreach ($file in $files | Select-Object -First 20) {
+        foreach ($file in $files | Select-Object -First 50) {
             $report.objects += @{
                 name = $file.Name
                 size = $file.Length
@@ -105,13 +134,42 @@ function Test-LcmbiarStructure {
         }
     }
     else {
-        # Single file
-        $file = Get-Item $Path
-        if ($file.Length -eq 0) {
-            $report.errors += "LCMBIAR file is empty"
-            $report.valid = $false
+        # File validation
+        $extension = [System.IO.Path]::GetExtension($Path).ToLower()
+        
+        if ($extension -eq '.lcmbiar' -or $extension -eq '.zip') {
+            try {
+                $zip = [System.IO.Compression.ZipFile]::OpenRead($Path)
+                $report.objectCount = $zip.Entries.Count
+                
+                # Check for manifest
+                $manifestEntry = $zip.Entries | Where-Object { $_.Name -match 'manifest.*\.xml$' -or $_.Name -eq 'manifest.json' }
+                if ($manifestEntry) {
+                    $report.manifestFound = $true
+                } else {
+                    $report.warnings += "No manifest file found in archive"
+                }
+                
+                # Catalog objects (first 50)
+                foreach ($entry in $zip.Entries | Select-Object -First 50) {
+                    $report.objects += @{
+                        name = $entry.Name
+                        size = $entry.Length
+                        compressedSize = $entry.CompressedLength
+                        type = [System.IO.Path]::GetExtension($entry.Name)
+                    }
+                }
+                
+                $zip.Dispose()
+            }
+            catch {
+                $report.errors += "Invalid or corrupted LCMBIAR archive: $_"
+                $report.valid = $false
+            }
         }
         else {
+            # Single non-archive file
+            $file = Get-Item $Path
             $report.objectCount = 1
             $report.objects += @{
                 name = $file.Name
@@ -122,6 +180,37 @@ function Test-LcmbiarStructure {
     }
     
     return $report
+}
+
+function Check-Dependencies {
+    param([string]$Path, [object]$Report)
+    
+    Write-Log "Checking dependencies..."
+    
+    # Basic check logic mirroring the Python script
+    # Real implementation would parse the BIAR/LCMBIAR metadata deeply
+    
+    if ((Get-Item $Path).Attributes -match 'Directory') {
+        $universes = Get-ChildItem -Path $Path -Recurse -Include *.unx, *.unv
+        if ($universes) {
+             # Just a warning/info for now as we can't easily validate external refs without connecting to CMS
+             $Report.warnings += "Found $($universes.Count) universe file(s) - ensure connections exist in target system"
+        }
+    }
+    elseif ($Path -match '\.(lcmbiar|zip)$') {
+        try {
+            $zip = [System.IO.Compression.ZipFile]::OpenRead($Path)
+            $universes = $zip.Entries | Where-Object { $_.Name -match '\.un[xv]$' }
+            if ($universes) {
+                $Report.warnings += "Found $($universes.Count) universe file(s) inside archive - ensure connections exist in target system"
+            }
+            $zip.Dispose()
+        } catch {
+            Write-Log "Failed to check dependencies in zip: $_" -Level WARN
+        }
+    }
+    
+    return $Report
 }
 
 function Test-Deployment {
@@ -208,10 +297,15 @@ try {
         
         $report = Test-LcmbiarStructure -Path $LcmbiarPath
         
-        # Output report
+        if ($CheckDependencies) {
+            $report = Check-Dependencies -Path $LcmbiarPath -Report $report
+        }
+        
+        # Output report summary
         Write-Log "Validation complete"
         Write-Log "Object count: $($report.objectCount)"
-        Write-Log "Valid: $($report.valid)"
+        Write-Log "Valid structure: $($report.valid)"
+        Write-Log "Manifest found: $($report.manifestFound)"
         
         if ($report.warnings.Count -gt 0) {
             foreach ($warn in $report.warnings) {

@@ -25,8 +25,7 @@ bobj-automation/
 │   ├── cd-pipeline.yml          # CD Pipeline
 │   └── templates/               # Reusable templates
 ├── scripts/
-│   ├── powershell/              # PowerShell scripts
-│   └── python/                  # Python scripts
+│   └── powershell/              # PowerShell scripts
 ├── config/
 │   └── environments/            # Environment configs
 └── docs/                        # Documentation
@@ -128,14 +127,6 @@ The CD pipeline deploys content across environments:
 | `Get-BOBJConnection.ps1` | Test connectivity |
 | `Validate-LCMBIARPackage.ps1` | Validate package |
 | `Invoke-BOBJRollback.ps1` | Execute rollback |
-
-### Python
-
-| Script | Purpose |
-|--------|---------|
-| `bobj_client.py` | BOBJ REST API client |
-| `lcmbiar_validator.py` | Package validation |
-| `notification_service.py` | Send notifications |
 
 ## 📖 Documentation
 

@@ -1,0 +1,418 @@
+{
+    "info": {
+        "_postman_id": "bobj-rest-api",
+        "name": "SAP BOBJ REST API",
+        "description": "Collection for testing SAP BusinessObjects REST Web Services used in automation scripts.",
+        "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+    },
+    "item": [
+        {
+            "name": "Authentication",
+            "item": [
+                {
+                    "name": "Logon",
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "var jsonData = pm.response.json();",
+                                    "pm.environment.set(\"logonToken\", jsonData.logonToken);",
+                                    "pm.test(\"Status code is 200\", function () {",
+                                    "    pm.response.to.have.status(200);",
+                                    "});",
+                                    "pm.test(\"Logon token received\", function () {",
+                                    "    pm.expect(jsonData.logonToken).to.not.be.undefined;",
+                                    "});"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ],
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"userName\": \"{{username}}\",\n    \"password\": \"{{password}}\",\n    \"auth\": \"{{authType}}\"\n}"
+                        },
+                        "url": {
+                            "raw": "{{baseUrl}}/biprws/logon/long",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "biprws",
+                                "logon",
+                                "long"
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Logoff",
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "X-SAP-LogonToken",
+                                "value": "{{logonToken}}"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/biprws/logoff",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "biprws",
+                                "logoff"
+                            ]
+                        }
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "InfoStore",
+            "item": [
+                {
+                    "name": "Get InfoStore",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "X-SAP-LogonToken",
+                                "value": "{{logonToken}}"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/biprws/infostore",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "biprws",
+                                "infostore"
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Get Folder Contents",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "X-SAP-LogonToken",
+                                "value": "{{logonToken}}"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/biprws/infostore/folder?path=/Public Folders",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "biprws",
+                                "infostore",
+                                "folder"
+                            ],
+                            "query": [
+                                {
+                                    "key": "path",
+                                    "value": "/Public Folders"
+                                }
+                            ]
+                        }
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "LCM Promotion (Export)",
+            "item": [
+                {
+                    "name": "Create Promotion Job",
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "var jsonData = pm.response.json();",
+                                    "if (jsonData.id) {",
+                                    "    pm.environment.set(\"exportJobId\", jsonData.id);",
+                                    "}"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ],
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "X-SAP-LogonToken",
+                                "value": "{{logonToken}}"
+                            },
+                            {
+                                "key": "Content-Type",
+                                "value": "application/json"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "raw",
+                            "raw": "{\n    \"name\": \"Postman_Export_Test\",\n    \"sourcePath\": \"/Public Folders/Reports\",\n    \"includeSecurityRights\": true,\n    \"includeDependencies\": true,\n    \"exportType\": \"LCMBIAR\"\n}"
+                        },
+                        "url": {
+                            "raw": "{{baseUrl}}/biprws/lcm/promotions",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "biprws",
+                                "lcm",
+                                "promotions"
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Get Job Status",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "X-SAP-LogonToken",
+                                "value": "{{logonToken}}"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/biprws/lcm/promotions/{{exportJobId}}/status",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "biprws",
+                                "lcm",
+                                "promotions",
+                                "{{exportJobId}}",
+                                "status"
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Download LCMBIAR",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "X-SAP-LogonToken",
+                                "value": "{{logonToken}}"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/biprws/lcm/promotions/{{exportJobId}}/download",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "biprws",
+                                "lcm",
+                                "promotions",
+                                "{{exportJobId}}",
+                                "download"
+                            ]
+                        }
+                    },
+                    "response": []
+                }
+            ]
+        },
+        {
+            "name": "LCM Import",
+            "item": [
+                {
+                    "name": "Upload LCMBIAR (Import)",
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "var jsonData = pm.response.json();",
+                                    "if (jsonData.id) {",
+                                    "    pm.environment.set(\"importJobId\", jsonData.id);",
+                                    "}"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ],
+                    "request": {
+                        "method": "POST",
+                        "header": [
+                            {
+                                "key": "X-SAP-LogonToken",
+                                "value": "{{logonToken}}"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            }
+                        ],
+                        "body": {
+                            "mode": "formdata",
+                            "formdata": [
+                                {
+                                    "key": "file",
+                                    "type": "file",
+                                    "src": []
+                                },
+                                {
+                                    "key": "conflictResolution",
+                                    "value": "overwrite",
+                                    "type": "text"
+                                },
+                                {
+                                    "key": "overwriteSecurity",
+                                    "value": "false",
+                                    "type": "text"
+                                }
+                            ]
+                        },
+                        "url": {
+                            "raw": "{{baseUrl}}/biprws/lcm/imports",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "biprws",
+                                "lcm",
+                                "imports"
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Get Import Status",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "X-SAP-LogonToken",
+                                "value": "{{logonToken}}"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/biprws/lcm/imports/{{importJobId}}/status",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "biprws",
+                                "lcm",
+                                "imports",
+                                "{{importJobId}}",
+                                "status"
+                            ]
+                        }
+                    },
+                    "response": []
+                },
+                {
+                    "name": "Get Import Results",
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "X-SAP-LogonToken",
+                                "value": "{{logonToken}}"
+                            },
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/biprws/lcm/imports/{{importJobId}}/results",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "biprws",
+                                "lcm",
+                                "imports",
+                                "{{importJobId}}",
+                                "results"
+                            ]
+                        }
+                    },
+                    "response": []
+                }
+            ]
+        }
+    ],
+    "variable": [
+        {
+            "key": "baseUrl",
+            "value": "http://your-bobj-server:6405",
+            "type": "string"
+        },
+        {
+            "key": "username",
+            "value": "Administrator",
+            "type": "string"
+        },
+        {
+            "key": "password",
+            "value": "",
+            "type": "string"
+        },
+        {
+            "key": "authType",
+            "value": "secEnterprise",
+            "type": "string"
+        }
+    ]
+}
