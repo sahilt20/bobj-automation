@@ -1,17 +1,29 @@
-# SAP BusinessObjects CI Pipeline
-# Continuous Integration for BOBJ Content Export and Validation
-# Triggers on push to main branch or pull requests
+# ============================================================================
+# SAP BusinessObjects CI Pipeline – Raylight REST API
+# ============================================================================
+# Exports LCMBIAR content from DEV, validates, and publishes artifacts.
+#
+# Raylight API endpoints used:
+#   /biprws/logon/long          – Authentication
+#   /biprws/raylight/v1/about   – Server health check
+#   /biprws/infostore/folder    – Folder resolution
+#   /biprws/promotion/          – LCM Promotion Management (export)
+#   /biprws/logoff              – Session cleanup
+# ============================================================================
 
 trigger:
   branches:
     include:
       - main
       - develop
-      - feature/*
+      - release/*
   paths:
     include:
       - config/**
       - scripts/**
+    exclude:
+      - docs/**
+      - '*.md'
 
 pr:
   branches:
@@ -19,205 +31,171 @@ pr:
       - main
       - develop
 
-# Pipeline Parameters
 parameters:
   - name: sourceEnvironment
-    displayName: 'Source Environment'
+    displayName: 'Source BOBJ Environment'
     type: string
     default: 'dev'
-    values:
-      - dev
-      - qa
-      
+    values: ['dev', 'qa', 'prod']
+
   - name: exportFolder
-    displayName: 'Export Folder Path'
+    displayName: 'BOBJ Folder to Export'
     type: string
     default: '/Public Folders'
-    
+
   - name: includeSecurityRights
-    displayName: 'Include Security Rights'
-    type: boolean
-    default: true
-    
-  - name: includeDependencies
-    displayName: 'Include Dependencies'
-    type: boolean
-    default: true
-    
-  - name: runValidation
-    displayName: 'Run Validation'
-    type: boolean
-    default: true
-    
-  - name: runSecurityScan
-    displayName: 'Run Security Scan'
+    displayName: 'Include Security/ACL Settings'
     type: boolean
     default: true
 
-# Variable References
+  - name: includeDependencies
+    displayName: 'Include Dependent Objects'
+    type: boolean
+    default: true
+
+  - name: includeConnections
+    displayName: 'Include Data Connections'
+    type: boolean
+    default: true
+
+  - name: runSecurityScan
+    displayName: 'Run Security Scan on Package'
+    type: boolean
+    default: true
+
+  - name: dryRun
+    displayName: 'Dry Run (test only, no export)'
+    type: boolean
+    default: false
+
 variables:
   - template: templates/variables/common-variables.yml
-
-# Build Name
-name: 'CI-$(Date:yyyyMMdd)-$(Rev:r)'
+  - template: templates/variables/environment-variables.yml
+    parameters:
+      environment: ${{ parameters.sourceEnvironment }}
 
 stages:
-  # ========================================
-  # Stage 1: Export BOBJ Content
-  # ========================================
-  - template: templates/stages/export-stage.yml
-    parameters:
-      sourceEnvironment: ${{ parameters.sourceEnvironment }}
-      exportFolder: ${{ parameters.exportFolder }}
-      includeSecurityRights: ${{ parameters.includeSecurityRights }}
-      includeDependencies: ${{ parameters.includeDependencies }}
-      exportObjects: []  # Export all objects in folder
-      
-  # ========================================
-  # Stage 2: Validate LCMBIAR Package
-  # ========================================
-  - ${{ if parameters.runValidation }}:
-    - template: templates/stages/validate-stage.yml
-      parameters:
-        artifactName: '$(artifactName)-$(Build.BuildId)'
-        runSecurityScan: ${{ parameters.runSecurityScan }}
-        checkDependencies: true
-        validateObjectCount: true
-        
-  # ========================================
-  # Stage 3: Publish Artifacts and Reports
-  # ========================================
-  - stage: Publish
-    displayName: 'Publish Build Artifacts'
-    dependsOn:
-      - Export_${{ parameters.sourceEnvironment }}
-      - ${{ if parameters.runValidation }}:
-        - Validate
-    condition: succeeded()
-    
+  # ── Stage 1: Raylight Health Check ──────────────────────────────────────
+  - stage: HealthCheck
+    displayName: 'Raylight API Health Check'
     jobs:
-      - job: PublishArtifacts
-        displayName: 'Publish Final Artifacts'
+      - job: CheckConnection
+        displayName: 'Verify BOBJ Raylight API'
+        pool: $(agentPool)
+        timeoutInMinutes: 5
+        steps:
+          - checkout: self
+            clean: true
+
+          - task: AzureKeyVault@2
+            displayName: 'Fetch Credentials from Key Vault'
+            inputs:
+              azureSubscription: $(serviceConnectionName)
+              KeyVaultName: $(keyVaultName)
+              SecretsFilter: 'bobj-username,bobj-password'
+              RunAsPreJob: true
+
+          - task: PowerShell@2
+            displayName: 'Raylight Connection Health Check'
+            inputs:
+              targetType: 'filePath'
+              filePath: '$(powershellScriptsPath)/Get-BOBJConnection.ps1'
+              arguments: >
+                -ServerUrl "$(bobjServerUrl)"
+                -CmsServer "$(bobjCmsServer)"
+                -CmsPort $(bobjCmsPort)
+                -Username "$(bobj-username)"
+                -Password "$(bobj-password)"
+                -AuthType "$(bobjAuthType)"
+              pwsh: true
+
+  # ── Stage 2: Export via Raylight Promotion API ──────────────────────────
+  - stage: Export
+    displayName: 'Export LCMBIAR via Raylight'
+    dependsOn: HealthCheck
+    condition: succeeded()
+    jobs:
+      - template: templates/jobs/export-job.yml
+        parameters:
+          serverUrl: $(bobjServerUrl)
+          cmsServer: $(bobjCmsServer)
+          cmsPort: $(bobjCmsPort)
+          keyVaultName: $(keyVaultName)
+          serviceConnectionName: $(serviceConnectionName)
+          authType: $(bobjAuthType)
+          exportFolder: ${{ parameters.exportFolder }}
+          includeSecurityRights: ${{ parameters.includeSecurityRights }}
+          includeDependencies: ${{ parameters.includeDependencies }}
+          includeConnections: ${{ parameters.includeConnections }}
+          dryRun: ${{ parameters.dryRun }}
+          outputPath: '$(artifactPath)'
+          agentPool: $(agentPool)
+
+  # ── Stage 3: Validate LCMBIAR Package ───────────────────────────────────
+  - stage: Validate
+    displayName: 'Validate LCMBIAR Package'
+    dependsOn: Export
+    condition: and(succeeded(), eq('${{ parameters.dryRun }}', 'false'))
+    jobs:
+      - template: templates/jobs/validate-job.yml
+        parameters:
+          artifactName: $(artifactName)
+          runSecurityScan: ${{ parameters.runSecurityScan }}
+          checkDependencies: ${{ parameters.includeDependencies }}
+          validateObjectCount: true
+
+  # ── Stage 4: Publish Build Summary ──────────────────────────────────────
+  - stage: Publish
+    displayName: 'Publish Build Summary'
+    dependsOn: Validate
+    condition: succeeded()
+    jobs:
+      - job: PublishSummary
+        displayName: 'Generate & Publish Summary'
         pool:
           vmImage: 'ubuntu-latest'
-          
+        timeoutInMinutes: 5
         steps:
           - task: PowerShell@2
             displayName: 'Generate Build Summary'
             inputs:
               targetType: 'inline'
               script: |
-                $buildSummary = @{
-                  BuildId = "$(Build.BuildId)"
-                  BuildNumber = "$(Build.BuildNumber)"
-                  SourceBranch = "$(Build.SourceBranchName)"
-                  SourceEnvironment = "${{ parameters.sourceEnvironment }}"
-                  ExportFolder = "${{ parameters.exportFolder }}"
-                  IncludeSecurityRights = "${{ parameters.includeSecurityRights }}"
-                  IncludeDependencies = "${{ parameters.includeDependencies }}"
-                  ValidationRun = "${{ parameters.runValidation }}"
-                  SecurityScanRun = "${{ parameters.runSecurityScan }}"
-                  Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss UTC"
-                  Committer = "$(Build.RequestedFor)"
-                  CommitId = "$(Build.SourceVersion)"
+                $summary = @{
+                  buildId = "$(Build.BuildId)"
+                  buildNumber = "$(Build.BuildNumber)"
+                  pipeline = "$(Build.DefinitionName)"
+                  sourceBranch = "$(Build.SourceBranch)"
+                  sourceVersion = "$(Build.SourceVersion)"
+                  sourceEnvironment = "${{ parameters.sourceEnvironment }}"
+                  exportFolder = "${{ parameters.exportFolder }}"
+                  timestamp = (Get-Date -Format 'yyyy-MM-ddTHH:mm:ssZ')
+                  raylightApiVersion = "v1"
+                  dryRun = $${{ parameters.dryRun }}
+                  status = "success"
                 }
-                
-                $buildSummary | ConvertTo-Json -Depth 5 | Out-File "$(Build.ArtifactStagingDirectory)/build-summary.json"
-                
-                Write-Host "=== Build Summary ==="
-                $buildSummary.GetEnumerator() | ForEach-Object { Write-Host "$($_.Key): $($_.Value)" }
+                $summary | ConvertTo-Json -Depth 3 | Out-File "$(Build.ArtifactStagingDirectory)/build-summary.json"
               pwsh: true
-              
+
           - task: PublishPipelineArtifact@1
             displayName: 'Publish Build Summary'
             inputs:
               targetPath: '$(Build.ArtifactStagingDirectory)/build-summary.json'
               artifact: 'build-summary-$(Build.BuildId)'
               publishLocation: 'pipeline'
-              
-  # ========================================
-  # Stage 4: Send Notifications
-  # ========================================
+
+  # ── Stage 5: Notifications ──────────────────────────────────────────────
   - stage: Notify
     displayName: 'Send Notifications'
-    dependsOn: Publish
+    dependsOn:
+      - Export
+      - Validate
+      - Publish
     condition: always()
-    
     jobs:
-      - job: NotifySuccess
-        displayName: 'Notify on Success'
-        condition: succeeded()
-        pool:
-          vmImage: 'ubuntu-latest'
-          
-        steps:
-          - task: PowerShell@2
-            displayName: 'Send Success Notification'
-            inputs:
-              targetType: 'inline'
-              script: |
-                $payload = @{
-                  "@type" = "MessageCard"
-                  "@context" = "http://schema.org/extensions"
-                  "themeColor" = "28A745"
-                  "summary" = "BOBJ CI Build Succeeded"
-                  "sections" = @(
-                    @{
-                      "activityTitle" = "✅ BOBJ CI Build Succeeded"
-                      "facts" = @(
-                        @{ "name" = "Build"; "value" = "$(Build.BuildNumber)" }
-                        @{ "name" = "Branch"; "value" = "$(Build.SourceBranchName)" }
-                        @{ "name" = "Source Env"; "value" = "${{ parameters.sourceEnvironment }}" }
-                      )
-                      "text" = "BOBJ content has been exported and validated successfully."
-                    }
-                  )
-                }
-                
-                $webhook = $env:TEAMS_WEBHOOK_URL
-                if ($webhook) {
-                  Invoke-RestMethod -Uri $webhook -Method Post -Body ($payload | ConvertTo-Json -Depth 10) -ContentType 'application/json'
-                }
-              pwsh: true
-            env:
-              TEAMS_WEBHOOK_URL: $(teamsWebhookUrl)
-            continueOnError: true
-            
-      - job: NotifyFailure
-        displayName: 'Notify on Failure'
-        condition: failed()
-        pool:
-          vmImage: 'ubuntu-latest'
-          
-        steps:
-          - task: PowerShell@2
-            displayName: 'Send Failure Notification'
-            inputs:
-              targetType: 'inline'
-              script: |
-                $payload = @{
-                  "@type" = "MessageCard"
-                  "@context" = "http://schema.org/extensions"
-                  "themeColor" = "DC3545"
-                  "summary" = "BOBJ CI Build Failed"
-                  "sections" = @(
-                    @{
-                      "activityTitle" = "❌ BOBJ CI Build Failed"
-                      "facts" = @(
-                        @{ "name" = "Build"; "value" = "$(Build.BuildNumber)" }
-                        @{ "name" = "Branch"; "value" = "$(Build.SourceBranchName)" }
-                        @{ "name" = "Source Env"; "value" = "${{ parameters.sourceEnvironment }}" }
-                      )
-                      "text" = "BOBJ CI build has failed. Please check the pipeline logs."
-                    }
-                  )
-                }
-                
-                $webhook = $env:TEAMS_WEBHOOK_URL
-                if ($webhook) {
-                  Invoke-RestMethod -Uri $webhook -Method Post -Body ($payload | ConvertTo-Json -Depth 10) -ContentType 'application/json'
-                }
-              pwsh: true
-            env:
-              TEAMS_WEBHOOK_URL: $(teamsWebhookUrl)
-            continueOnError: true
+      - template: templates/jobs/notification-job.yml
+        parameters:
+          messageType: $[ stageDependencies.Validate.ValidatePackage.result ]
+          title: 'BOBJ CI Pipeline – $(Build.BuildNumber)'
+          environment: ${{ parameters.sourceEnvironment }}
+          pipelineName: '$(Build.DefinitionName)'

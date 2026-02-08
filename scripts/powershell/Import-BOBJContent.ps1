@@ -1,320 +1,271 @@
 <#
 .SYNOPSIS
-    Imports LCMBIAR content to SAP BusinessObjects system.
+    Imports LCMBIAR content into SAP BusinessObjects via Raylight REST API.
 
 .DESCRIPTION
-    This script connects to a SAP BusinessObjects system and imports content
-    from an LCMBIAR archive file.
+    Connects to SAP BOBJ using the Raylight RESTful Web Services SDK and the
+    Promotion Management API to import LCMBIAR archives.
+
+    Workflow:
+        1. Authenticate via /biprws/logon/long
+        2. Health check via /biprws/raylight/v1/about
+        3. Validate LCMBIAR file and compute SHA256
+        4. Upload LCMBIAR via POST /biprws/promotion/ (multipart)
+        5. Poll for completion via GET /biprws/promotion/{id}
+        6. Retrieve results via GET /biprws/promotion/{id}/results
+        7. Logoff via /biprws/logoff
 
 .PARAMETER ServerUrl
-    The URL of the BOBJ server
+    Base URL of the target BOBJ web application server
 
 .PARAMETER CmsServer
-    The CMS server hostname
+    CMS server hostname
+
+.PARAMETER CmsPort
+    CMS port (default 6400)
 
 .PARAMETER Username
-    Username for BOBJ authentication
+    BOBJ service account username
 
 .PARAMETER Password
-    Password for BOBJ authentication
+    BOBJ service account password
+
+.PARAMETER AuthType
+    Authentication type: secEnterprise | secLDAP | secWinAD | secSAPR3
 
 .PARAMETER LcmbiarPath
     Path to the LCMBIAR file or directory containing LCMBIAR files
 
 .PARAMETER ConflictResolution
-    How to handle conflicts (UpdateExisting, SkipExisting, RenameNew, Fail)
+    Strategy: UpdateExisting | SkipExisting | RenameNew | Fail
 
 .PARAMETER OverwriteSecurity
-    Overwrite security settings during import
+    Overwrite security settings on target objects
+
+.PARAMETER TargetFolder
+    Optional target folder path for import
+
+.PARAMETER ValidateChecksum
+    Verify SHA256 checksum from export manifest before import
+
+.PARAMETER ExpectedChecksum
+    Expected SHA256 checksum (from CI artifact)
+
+.PARAMETER JobTimeoutSeconds
+    Maximum wait time for import job (default 1800)
+
+.PARAMETER PollIntervalSeconds
+    Interval between status polls (default 10)
 
 .PARAMETER VerboseLogging
-    Enable verbose logging
+    Enable debug-level logging
 #>
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$ServerUrl,
-    
-    [Parameter(Mandatory = $true)]
-    [string]$CmsServer,
-    
-    [Parameter(Mandatory = $false)]
-    [int]$CmsPort = 6400,
-    
-    [Parameter(Mandatory = $true)]
-    [string]$Username,
-    
-    [Parameter(Mandatory = $true)]
-    [string]$Password,
-    
-    [Parameter(Mandatory = $false)]
-    [ValidateSet('secEnterprise', 'secLDAP', 'secWinAD', 'secSAPR3')]
-    [string]$AuthType = 'secEnterprise',
-    
-    [Parameter(Mandatory = $true)]
-    [string]$LcmbiarPath,
-    
-    [Parameter(Mandatory = $false)]
-    [ValidateSet('UpdateExisting', 'SkipExisting', 'RenameNew', 'Fail')]
-    [string]$ConflictResolution = 'UpdateExisting',
-    
-    [Parameter(Mandatory = $false)]
-    [switch]$OverwriteSecurity = $false,
-    
-    [Parameter(Mandatory = $false)]
-    [switch]$VerboseLogging = $false
+    [Parameter(Mandatory=$true)][string]$ServerUrl,
+    [Parameter(Mandatory=$true)][string]$CmsServer,
+    [Parameter(Mandatory=$false)][int]$CmsPort = 6400,
+    [Parameter(Mandatory=$true)][string]$Username,
+    [Parameter(Mandatory=$true)][string]$Password,
+    [Parameter(Mandatory=$false)][ValidateSet('secEnterprise','secLDAP','secWinAD','secSAPR3')][string]$AuthType = 'secEnterprise',
+    [Parameter(Mandatory=$true)][string]$LcmbiarPath,
+    [Parameter(Mandatory=$false)][ValidateSet('UpdateExisting','SkipExisting','RenameNew','Fail')][string]$ConflictResolution = 'UpdateExisting',
+    [Parameter(Mandatory=$false)][switch]$OverwriteSecurity,
+    [Parameter(Mandatory=$false)][string]$TargetFolder,
+    [Parameter(Mandatory=$false)][switch]$ValidateChecksum,
+    [Parameter(Mandatory=$false)][string]$ExpectedChecksum,
+    [Parameter(Mandatory=$false)][int]$JobTimeoutSeconds = 1800,
+    [Parameter(Mandatory=$false)][int]$PollIntervalSeconds = 10,
+    [Parameter(Mandatory=$false)][switch]$VerboseLogging
 )
 
 $ErrorActionPreference = 'Stop'
 
 function Write-Log {
     param([string]$Message, [string]$Level = 'INFO')
-    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    $logMessage = "[$timestamp] [$Level] $Message"
+    $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $line = "[$ts] [$Level] $Message"
     switch ($Level) {
-        'ERROR' { Write-Host $logMessage -ForegroundColor Red }
-        'WARN'  { Write-Host $logMessage -ForegroundColor Yellow }
-        'DEBUG' { if ($VerboseLogging) { Write-Host $logMessage -ForegroundColor Gray } }
-        default { Write-Host $logMessage }
+        'ERROR' { Write-Host $line -ForegroundColor Red }
+        'WARN'  { Write-Host $line -ForegroundColor Yellow }
+        'DEBUG' { if ($VerboseLogging) { Write-Host $line -ForegroundColor Gray } }
+        default { Write-Host $line }
     }
 }
 
-function Get-BOBJSession {
+function Get-RaylightSession {
     param([string]$ServerUrl, [string]$Username, [string]$Password, [string]$AuthType)
-    
-    Write-Log "Authenticating to BOBJ server: $ServerUrl"
-    
-    $loginUrl = "$ServerUrl/biprws/logon/long"
-    $loginBody = @{
-        userName = $Username
-        password = $Password
-        auth = $AuthType
-    } | ConvertTo-Json
-    
-    try {
-        $response = Invoke-RestMethod -Uri $loginUrl -Method Post -Body $loginBody -ContentType 'application/json'
-        $logonToken = $response.logonToken
-        
-        if (-not $logonToken) { throw "Failed to obtain logon token" }
-        
-        Write-Log "Successfully authenticated"
-        return $logonToken
-    }
-    catch {
-        Write-Log "Authentication failed: $_" -Level ERROR
-        throw
-    }
+    Write-Log "Authenticating to $ServerUrl via /biprws/logon/long"
+    $body = @{ userName = $Username; password = $Password; auth = $AuthType } | ConvertTo-Json
+    $headers = @{ 'Accept' = 'application/json'; 'Content-Type' = 'application/json' }
+    $resp = Invoke-RestMethod -Uri "$ServerUrl/biprws/logon/long" -Method Post -Body $body -Headers $headers
+    if (-not $resp.logonToken) { throw "No logonToken in response" }
+    Write-Log "Authentication successful"
+    return $resp.logonToken
 }
 
-function Import-FromLCMBIAR {
-    param(
-        [string]$ServerUrl,
-        [string]$LogonToken,
-        [string]$LcmbiarFile,
-        [string]$ConflictResolution,
-        [bool]$OverwriteSecurity
-    )
-    
-    Write-Log "Starting LCMBIAR import: $LcmbiarFile"
-    
-    $headers = @{
-        'X-SAP-LogonToken' = $LogonToken
-        'Accept' = 'application/json'
-    }
-    
-    # Map conflict resolution to API values
-    $conflictMap = @{
-        'UpdateExisting' = 'overwrite'
-        'SkipExisting' = 'skip'
-        'RenameNew' = 'rename'
-        'Fail' = 'fail'
-    }
-    
-    try {
-        # Upload LCMBIAR file
-        Write-Log "Uploading LCMBIAR file..." -Level DEBUG
-        
-        $uploadUrl = "$ServerUrl/biprws/lcm/imports"
-        $fileBytes = [System.IO.File]::ReadAllBytes($LcmbiarFile)
-        $fileName = [System.IO.Path]::GetFileName($LcmbiarFile)
-        
-        $boundary = [System.Guid]::NewGuid().ToString()
-        $headers['Content-Type'] = "multipart/form-data; boundary=$boundary"
-        
-        # Build multipart form data
-        $bodyLines = @(
-            "--$boundary",
-            "Content-Disposition: form-data; name=`"file`"; filename=`"$fileName`"",
-            "Content-Type: application/octet-stream",
-            "",
-            [System.Text.Encoding]::UTF8.GetString($fileBytes),
-            "--$boundary",
-            "Content-Disposition: form-data; name=`"conflictResolution`"",
-            "",
-            $conflictMap[$ConflictResolution],
-            "--$boundary",
-            "Content-Disposition: form-data; name=`"overwriteSecurity`"",
-            "",
-            $OverwriteSecurity.ToString().ToLower(),
-            "--$boundary--"
-        )
-        
-        $uploadResponse = Invoke-RestMethod -Uri $uploadUrl -Method Post -Headers $headers -Body ($bodyLines -join "`r`n")
-        
-        $importJobId = $uploadResponse.id
-        Write-Log "Import job created with ID: $importJobId"
-        
-        # Wait for import completion
-        $maxAttempts = 120
-        $attempts = 0
-        $completed = $false
-        
-        while (-not $completed -and $attempts -lt $maxAttempts) {
-            Start-Sleep -Seconds 5
-            $attempts++
-            
-            $statusUrl = "$ServerUrl/biprws/lcm/imports/$importJobId/status"
-            $statusHeaders = @{
-                'X-SAP-LogonToken' = $LogonToken
-                'Accept' = 'application/json'
-            }
-            $status = Invoke-RestMethod -Uri $statusUrl -Method Get -Headers $statusHeaders
-            
-            Write-Log "Import status: $($status.state) (attempt $attempts/$maxAttempts)" -Level DEBUG
-            
-            if ($status.state -eq 'Completed') {
-                $completed = $true
-            }
-            elseif ($status.state -eq 'Failed') {
-                throw "Import job failed: $($status.errorMessage)"
-            }
-        }
-        
-        if (-not $completed) {
-            throw "Import job timed out"
-        }
-        
-        # Get import results
-        $resultsUrl = "$ServerUrl/biprws/lcm/imports/$importJobId/results"
-        $results = Invoke-RestMethod -Uri $resultsUrl -Method Get -Headers $statusHeaders
-        
-        Write-Log "Import completed successfully"
-        Write-Log "Objects imported: $($results.importedCount)" -Level INFO
-        Write-Log "Objects skipped: $($results.skippedCount)" -Level INFO
-        Write-Log "Objects failed: $($results.failedCount)" -Level INFO
-        
-        return @{
-            Success = $true
-            JobId = $importJobId
-            ImportedCount = $results.importedCount
-            SkippedCount = $results.skippedCount
-            FailedCount = $results.failedCount
-        }
-    }
-    catch {
-        Write-Log "Import failed: $_" -Level ERROR
-        return @{
-            Success = $false
-            Error = $_.Exception.Message
-        }
-    }
-}
-
-function Close-BOBJSession {
+function Test-RaylightHealth {
     param([string]$ServerUrl, [string]$LogonToken)
-    
-    $logoffUrl = "$ServerUrl/biprws/logoff"
-    $headers = @{ 'X-SAP-LogonToken' = $LogonToken }
-    
+    $headers = @{ 'X-SAP-LogonToken' = """$LogonToken"""; 'Accept' = 'application/json' }
     try {
-        Invoke-RestMethod -Uri $logoffUrl -Method Post -Headers $headers | Out-Null
-        Write-Log "Session closed" -Level DEBUG
+        $info = Invoke-RestMethod -Uri "$ServerUrl/biprws/raylight/v1/about" -Method Get -Headers $headers
+        Write-Log "Target BOBJ: $($info.productName) v$($info.productVersion)"
+        return $info
     }
-    catch {
-        Write-Log "Failed to close session: $_" -Level WARN
-    }
+    catch { Write-Log "Raylight health check failed: $_" -Level WARN; return $null }
 }
 
-# Main execution
+function Import-LcmbiarViaPromotion {
+    param(
+        [string]$ServerUrl, [string]$LogonToken, [string]$LcmbiarFile,
+        [string]$ConflictResolution, [bool]$OverwriteSecurity, [string]$TargetFolder
+    )
+    $fileName = Split-Path $LcmbiarFile -Leaf
+    $fileSize = (Get-Item $LcmbiarFile).Length
+    Write-Log "Uploading LCMBIAR: $fileName ($fileSize bytes)"
+
+    $conflictMap = @{ 'UpdateExisting'='overwrite'; 'SkipExisting'='skip'; 'RenameNew'='rename'; 'Fail'='fail' }
+    $boundary = [System.Guid]::NewGuid().ToString()
+    $fileBytes = [System.IO.File]::ReadAllBytes($LcmbiarFile)
+    $parts = [System.Collections.ArrayList]::new()
+    $enc = [System.Text.Encoding]::UTF8
+    $nl = "`r`n"
+
+    # File part
+    [void]$parts.Add($enc.GetBytes("--$boundary$nl"))
+    [void]$parts.Add($enc.GetBytes("Content-Disposition: form-data; name=`"file`"; filename=`"$fileName`"$nl"))
+    [void]$parts.Add($enc.GetBytes("Content-Type: application/octet-stream$nl$nl"))
+    [void]$parts.Add($fileBytes)
+    [void]$parts.Add($enc.GetBytes($nl))
+
+    # Form fields
+    foreach ($kv in @(@("lcmType","import"), @("conflictResolution",$conflictMap[$ConflictResolution]), @("overwriteSecurity",$OverwriteSecurity.ToString().ToLower()))) {
+        [void]$parts.Add($enc.GetBytes("--$boundary$nl"))
+        [void]$parts.Add($enc.GetBytes("Content-Disposition: form-data; name=`"$($kv[0])`"$nl$nl"))
+        [void]$parts.Add($enc.GetBytes("$($kv[1])$nl"))
+    }
+    if ($TargetFolder) {
+        [void]$parts.Add($enc.GetBytes("--$boundary$nl"))
+        [void]$parts.Add($enc.GetBytes("Content-Disposition: form-data; name=`"targetFolder`"$nl$nl"))
+        [void]$parts.Add($enc.GetBytes("$TargetFolder$nl"))
+    }
+    [void]$parts.Add($enc.GetBytes("--$boundary--$nl"))
+
+    $totalLen = ($parts | ForEach-Object { $_.Length } | Measure-Object -Sum).Sum
+    $bodyBytes = [byte[]]::new($totalLen)
+    $off = 0
+    foreach ($p in $parts) { [System.Array]::Copy($p, 0, $bodyBytes, $off, $p.Length); $off += $p.Length }
+
+    $headers = @{ 'X-SAP-LogonToken' = """$LogonToken"""; 'Accept' = 'application/json'; 'Content-Type' = "multipart/form-data; boundary=$boundary" }
+    $resp = Invoke-RestMethod -Uri "$ServerUrl/biprws/promotion/" -Method Post -Body $bodyBytes -Headers $headers -TimeoutSec 600
+    $jobId = if ($resp.id) { $resp.id } else { $resp.si_id }
+    Write-Log "Import job created: ID=$jobId"
+    return $jobId
+}
+
+function Wait-ForImport {
+    param([string]$ServerUrl, [string]$LogonToken, [string]$JobId, [int]$TimeoutSeconds, [int]$PollInterval)
+    Write-Log "Waiting for import job $JobId (timeout=${TimeoutSeconds}s)"
+    $headers = @{ 'X-SAP-LogonToken' = """$LogonToken"""; 'Accept' = 'application/json' }
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    $lastState = ""
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds $PollInterval
+        $status = Invoke-RestMethod -Uri "$ServerUrl/biprws/promotion/$JobId" -Method Get -Headers $headers
+        $state = $status.state
+        if ($state -ne $lastState) { Write-Log "Import $JobId: $state"; $lastState = $state }
+        if ($state -in @('Completed','Success')) { return $status }
+        elseif ($state -in @('Failed','Error')) { throw "Import $JobId failed: $($status.errorMessage)" }
+    }
+    throw "Import $JobId timed out after ${TimeoutSeconds}s"
+}
+
+function Get-ImportResults {
+    param([string]$ServerUrl, [string]$LogonToken, [string]$JobId)
+    $headers = @{ 'X-SAP-LogonToken' = """$LogonToken"""; 'Accept' = 'application/json' }
+    try { return Invoke-RestMethod -Uri "$ServerUrl/biprws/promotion/$JobId/results" -Method Get -Headers $headers }
+    catch { Write-Log "Could not get import results: $_" -Level WARN; return $null }
+}
+
+function Close-RaylightSession {
+    param([string]$ServerUrl, [string]$LogonToken)
+    try { Invoke-RestMethod -Uri "$ServerUrl/biprws/logoff" -Method Post -Headers @{ 'X-SAP-LogonToken' = """$LogonToken""" } | Out-Null; Write-Log "Session closed" -Level DEBUG }
+    catch { Write-Log "Session close failed: $_" -Level WARN }
+}
+
+# ── Main ────────────────────────────────────────────────────────────────────
+
 try {
-    Write-Log "=== BOBJ Content Import Started ==="
-    Write-Log "Server URL: $ServerUrl"
-    Write-Log "LCMBIAR Path: $LcmbiarPath"
-    Write-Log "Conflict Resolution: $ConflictResolution"
-    Write-Log "Overwrite Security: $OverwriteSecurity"
-    
-    # Find LCMBIAR files
+    Write-Log "================================================================"
+    Write-Log "  BOBJ LCMBIAR Import via Raylight REST API"
+    Write-Log "================================================================"
+    Write-Log "Server: $ServerUrl | CMS: ${CmsServer}:${CmsPort}"
+    Write-Log "LCMBIAR: $LcmbiarPath | Conflict: $ConflictResolution | OverwriteSec: $OverwriteSecurity"
+
+    # Discover files
     if (Test-Path $LcmbiarPath -PathType Container) {
         $lcmbiarFiles = Get-ChildItem -Path $LcmbiarPath -Filter "*.lcmbiar" -Recurse
-        if ($lcmbiarFiles.Count -eq 0) {
-            # Also check for files without extension
-            $lcmbiarFiles = Get-ChildItem -Path $LcmbiarPath -Recurse -File | Where-Object { $_.Length -gt 0 }
+        if ($lcmbiarFiles.Count -eq 0) { $lcmbiarFiles = Get-ChildItem -Path $LcmbiarPath -Recurse -File | Where-Object { $_.Length -gt 0 } }
+    } else { $lcmbiarFiles = @(Get-Item $LcmbiarPath) }
+
+    if ($lcmbiarFiles.Count -eq 0) { Write-Log "No LCMBIAR files found" -Level ERROR; exit 1 }
+    Write-Log "Found $($lcmbiarFiles.Count) LCMBIAR file(s)"
+
+    # Checksum validation
+    if ($ValidateChecksum -and $ExpectedChecksum) {
+        foreach ($f in $lcmbiarFiles) {
+            $hash = (Get-FileHash -Path $f.FullName -Algorithm SHA256).Hash
+            if ($hash -ne $ExpectedChecksum) {
+                Write-Log "Checksum mismatch: expected=$ExpectedChecksum actual=$hash" -Level ERROR
+                Write-Host "##vso[task.logissue type=error]LCMBIAR checksum mismatch"; exit 1
+            }
+            Write-Log "Checksum verified: $($f.Name)"
         }
     }
-    else {
-        $lcmbiarFiles = @(Get-Item $LcmbiarPath)
-    }
-    
-    if ($lcmbiarFiles.Count -eq 0) {
-        Write-Log "No LCMBIAR files found" -Level ERROR
-        exit 1
-    }
-    
-    Write-Log "Found $($lcmbiarFiles.Count) LCMBIAR file(s)"
-    
-    # Authenticate
-    $logonToken = Get-BOBJSession -ServerUrl $ServerUrl -Username $Username -Password $Password -AuthType $AuthType
-    
-    $totalImported = 0
-    $totalSkipped = 0
-    $totalFailed = 0
-    $success = $true
-    
+
+    $logonToken = Get-RaylightSession -ServerUrl $ServerUrl -Username $Username -Password $Password -AuthType $AuthType
+    $serverInfo = Test-RaylightHealth -ServerUrl $ServerUrl -LogonToken $logonToken
+
+    $totalImported = 0; $totalSkipped = 0; $totalFailed = 0; $allSuccess = $true
+
     foreach ($file in $lcmbiarFiles) {
         Write-Log "Processing: $($file.FullName)"
-        
-        $result = Import-FromLCMBIAR `
-            -ServerUrl $ServerUrl `
-            -LogonToken $logonToken `
-            -LcmbiarFile $file.FullName `
-            -ConflictResolution $ConflictResolution `
-            -OverwriteSecurity $OverwriteSecurity
-        
-        if ($result.Success) {
-            $totalImported += $result.ImportedCount
-            $totalSkipped += $result.SkippedCount
-            $totalFailed += $result.FailedCount
+        try {
+            $jobId = Import-LcmbiarViaPromotion -ServerUrl $ServerUrl -LogonToken $logonToken `
+                -LcmbiarFile $file.FullName -ConflictResolution $ConflictResolution `
+                -OverwriteSecurity $OverwriteSecurity.IsPresent -TargetFolder $TargetFolder
+            Wait-ForImport -ServerUrl $ServerUrl -LogonToken $logonToken -JobId $jobId `
+                -TimeoutSeconds $JobTimeoutSeconds -PollInterval $PollIntervalSeconds | Out-Null
+            $res = Get-ImportResults -ServerUrl $ServerUrl -LogonToken $logonToken -JobId $jobId
+            $imp = if ($res) { $res.importedCount } else { 0 }
+            $skip = if ($res) { $res.skippedCount } else { 0 }
+            $fail = if ($res) { $res.failedCount } else { 0 }
+            $totalImported += $imp; $totalSkipped += $skip; $totalFailed += $fail
+            Write-Log "Result: imported=$imp skipped=$skip failed=$fail"
+            if ($fail -gt 0) { $allSuccess = $false }
         }
-        else {
-            $success = $false
-            Write-Log "Failed to import $($file.Name): $($result.Error)" -Level ERROR
+        catch {
+            Write-Log "Import failed for $($file.Name): $_" -Level ERROR
+            $allSuccess = $false
         }
     }
-    
-    # Close session
-    Close-BOBJSession -ServerUrl $ServerUrl -LogonToken $logonToken
-    
-    Write-Log "=== Import Summary ==="
-    Write-Log "Total imported: $totalImported"
-    Write-Log "Total skipped: $totalSkipped"
-    Write-Log "Total failed: $totalFailed"
-    
-    # Set Azure DevOps variables
+
+    Close-RaylightSession -ServerUrl $ServerUrl -LogonToken $logonToken
+
     Write-Host "##vso[task.setvariable variable=importedCount]$totalImported"
     Write-Host "##vso[task.setvariable variable=skippedCount]$totalSkipped"
     Write-Host "##vso[task.setvariable variable=failedCount]$totalFailed"
-    
-    if ($success -and $totalFailed -eq 0) {
-        Write-Log "=== Import Completed Successfully ===" -Level INFO
-        exit 0
-    }
-    else {
-        Write-Log "=== Import Completed with Errors ===" -Level WARN
-        exit 1
-    }
+
+    Write-Log "================================================================"
+    Write-Log "  Summary: imported=$totalImported skipped=$totalSkipped failed=$totalFailed"
+    Write-Log "================================================================"
+
+    if ($allSuccess -and $totalFailed -eq 0) { exit 0 } else { exit 1 }
 }
 catch {
-    Write-Log "Unhandled error: $_" -Level ERROR
+    Write-Log "FATAL: $_" -Level ERROR
+    Write-Log $_.ScriptStackTrace -Level ERROR
+    Write-Host "##vso[task.logissue type=error]Import failed: $_"
     exit 1
 }

@@ -2,40 +2,23 @@
     "name": "Development",
     "description": "SAP BusinessObjects Development Environment",
     "server": {
-        "url": "http://bobj-dev.example.com:8080",
-        "cms": {
-            "host": "bobj-dev-cms.example.com",
-            "port": 6400,
-            "cluster": "DEV_CLUSTER"
-        }
+        "url": "https://bobj-dev.example.com:8080",
+        "cmsServer": "bobj-dev-cms.example.com",
+        "cmsPort": 6400,
+        "cluster": "DEV_CLUSTER"
+    },
+    "raylightApi": {
+        "basePath": "/biprws/raylight/v1",
+        "promotionPath": "/biprws/promotion",
+        "infostorePath": "/biprws/infostore"
     },
     "authentication": {
         "type": "secEnterprise",
-        "keyVault": "kv-bobj-dev",
-        "usernameSecret": "bobj-username",
-        "passwordSecret": "bobj-password"
+        "keyVault": "kv-bobj-dev"
     },
-    "settings": {
-        "defaultExportFolder": "/Public Folders",
-        "includeSecurityRights": true,
-        "includeDependencies": true,
-        "conflictResolution": "UpdateExisting",
-        "exportTimeout": 30,
-        "importTimeout": 45
-    },
-    "approval": {
-        "required": false,
-        "timeout": 0
-    },
-    "notifications": {
-        "teams": {
-            "enabled": true,
-            "webhookSecretName": "teams-webhook-dev"
-        },
-        "email": {
-            "enabled": false,
-            "recipients": []
-        }
-    },
+    "exportSettings": { "timeout": 30 },
+    "importSettings": { "timeout": 45, "conflictResolution": "UpdateExisting" },
+    "approval": { "required": false },
+    "notifications": { "teams": { "enabled": true }, "email": { "enabled": false } },
     "agentPool": "BOBJ-Dev-Agents"
 }

@@ -2,60 +2,24 @@
     "name": "Production",
     "description": "SAP BusinessObjects Production Environment",
     "server": {
-        "url": "http://bobj-prod.example.com:8080",
-        "cms": {
-            "host": "bobj-prod-cms.example.com",
-            "port": 6400,
-            "cluster": "PROD_CLUSTER"
-        }
+        "url": "https://bobj-prod.example.com:8080",
+        "cmsServer": "bobj-prod-cms.example.com",
+        "cmsPort": 6400,
+        "cluster": "PROD_CLUSTER"
+    },
+    "raylightApi": {
+        "basePath": "/biprws/raylight/v1",
+        "promotionPath": "/biprws/promotion",
+        "infostorePath": "/biprws/infostore"
     },
     "authentication": {
         "type": "secEnterprise",
-        "keyVault": "kv-bobj-prod",
-        "usernameSecret": "bobj-username",
-        "passwordSecret": "bobj-password"
+        "keyVault": "kv-bobj-prod"
     },
-    "settings": {
-        "defaultExportFolder": "/Public Folders",
-        "includeSecurityRights": true,
-        "includeDependencies": true,
-        "conflictResolution": "UpdateExisting",
-        "exportTimeout": 45,
-        "importTimeout": 90,
-        "createBackupBeforeImport": true
-    },
-    "approval": {
-        "required": true,
-        "timeout": 2880,
-        "minimumApprovers": 2,
-        "approverGroups": [
-            "BOBJ-Prod-Approvers",
-            "BOBJ-Release-Managers"
-        ]
-    },
-    "deploymentWindow": {
-        "enabled": true,
-        "startHourUTC": 6,
-        "endHourUTC": 18,
-        "allowedDays": [
-            "Monday",
-            "Tuesday",
-            "Wednesday",
-            "Thursday"
-        ]
-    },
-    "notifications": {
-        "teams": {
-            "enabled": true,
-            "webhookSecretName": "teams-webhook-prod"
-        },
-        "email": {
-            "enabled": true,
-            "recipients": [
-                "prod-team@example.com",
-                "bobj-admins@example.com"
-            ]
-        }
-    },
+    "exportSettings": { "timeout": 45 },
+    "importSettings": { "timeout": 90, "conflictResolution": "UpdateExisting", "createBackup": true },
+    "approval": { "required": true, "approverGroups": ["BOBJ-Prod-Approvers", "BOBJ-Release-Managers"], "minimumApprovers": 2, "timeoutMinutes": 2880 },
+    "deploymentWindow": { "enabled": true, "timezone": "UTC", "startHour": 6, "endHour": 18, "allowedDays": ["Monday","Tuesday","Wednesday","Thursday"] },
+    "notifications": { "teams": { "enabled": true }, "email": { "enabled": true, "recipients": ["prod-team@example.com", "bobj-admins@example.com"] } },
     "agentPool": "BOBJ-Prod-Agents"
 }

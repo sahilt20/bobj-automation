@@ -1,4 +1,17 @@
 {
+    "raylightApiVersion": "v1",
+    "apiEndpoints": {
+        "authentication": "/biprws/logon/long",
+        "logoff": "/biprws/logoff",
+        "raylightAbout": "/biprws/raylight/v1/about",
+        "raylightDocuments": "/biprws/raylight/v1/documents",
+        "infostore": "/biprws/infostore",
+        "promotion": "/biprws/promotion",
+        "promotionTest": "/biprws/promotion/{id}/test",
+        "promotionExecute": "/biprws/promotion/{id}/promote",
+        "promotionResults": "/biprws/promotion/{id}/results",
+        "promotionDownload": "/biprws/promotion/{id}/lcmbiar"
+    },
     "defaultSettings": {
         "includeSecurityRights": true,
         "includeDependencies": true,
@@ -12,6 +25,12 @@
             "SkipExisting": "Keep existing objects, skip duplicates",
             "RenameNew": "Rename incoming objects to avoid conflicts",
             "Fail": "Fail the promotion if conflicts exist"
+        },
+        "apiMapping": {
+            "UpdateExisting": "overwrite",
+            "SkipExisting": "skip",
+            "RenameNew": "rename",
+            "Fail": "fail"
         }
     },
     "securityOptions": {
@@ -20,18 +39,8 @@
         "applyTargetSecurity": false
     },
     "objectTypes": {
-        "include": [
-            "Report",
-            "Universe",
-            "Connection",
-            "Folder",
-            "Category",
-            "Publication"
-        ],
-        "exclude": [
-            "Inbox",
-            "PersonalCategory"
-        ]
+        "include": ["Report", "Universe", "Connection", "Folder", "Category", "Publication"],
+        "exclude": ["Inbox", "PersonalCategory"]
     },
     "retry": {
         "maxAttempts": 3,
@@ -40,7 +49,10 @@
     },
     "jobSettings": {
         "maxConcurrentJobs": 1,
-        "jobPollingIntervalSeconds": 5,
-        "jobTimeoutMinutes": 60
-    }
+        "jobPollingIntervalSeconds": 10,
+        "jobTimeoutMinutes": 60,
+        "sessionTimeoutSeconds": 3600,
+        "tokenRefreshMarginSeconds": 300
+    },
+    "checksumAlgorithm": "SHA256"
 }

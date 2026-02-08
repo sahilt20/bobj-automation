@@ -1,192 +1,179 @@
-# Deploy Stage Template for BOBJ Content
-# Imports LCMBIAR content to target environment with approval gates
+# Deploy Stage – Raylight Promotion API
+# Imports LCMBIAR via POST /biprws/promotion/ with approval gates
 
 parameters:
   - name: targetEnvironment
     type: string
+  - name: dependsOn
+    type: object
+    default: []
   - name: artifactName
     type: string
   - name: conflictResolution
     type: string
     default: 'UpdateExisting'
-    values:
-      - UpdateExisting
-      - SkipExisting
-      - RenameNew
-      - Fail
   - name: overwriteSecurity
     type: boolean
     default: false
   - name: createBackup
     type: boolean
     default: true
-  - name: dependsOn
-    type: object
-    default: []
+  - name: requireApproval
+    type: boolean
+    default: false
+  - name: minimumApprovers
+    type: number
+    default: 1
 
 stages:
   - stage: Deploy_${{ parameters.targetEnvironment }}
     displayName: 'Deploy to ${{ upper(parameters.targetEnvironment) }}'
     dependsOn: ${{ parameters.dependsOn }}
+    condition: succeeded()
     variables:
       - template: ../variables/common-variables.yml
       - template: ../variables/environment-variables.yml
         parameters:
           environment: ${{ parameters.targetEnvironment }}
-    
-    # Environment with approval gates
-    ${{ if ne(parameters.targetEnvironment, 'dev') }}:
-      pool: server
-      jobs:
-        - deployment: ApproveDeployment
-          displayName: 'Approve Deployment to ${{ upper(parameters.targetEnvironment) }}'
-          environment: 'bobj-${{ parameters.targetEnvironment }}'
-          strategy:
-            runOnce:
-              deploy:
-                steps:
-                  - script: echo "Deployment approved for ${{ parameters.targetEnvironment }}"
-    
+
     jobs:
-      - job: BackupExisting
-        displayName: 'Backup Existing Content'
-        ${{ if ne(parameters.targetEnvironment, 'dev') }}:
-          dependsOn: ApproveDeployment
-        condition: and(succeeded(), eq('${{ parameters.createBackup }}', 'true'))
+      - ${{ if parameters.requireApproval }}:
+        - job: WaitForApproval
+          displayName: 'Awaiting Approval'
+          pool: server
+          timeoutInMinutes: $(approvalTimeout)
+          steps:
+            - task: ManualValidation@0
+              displayName: 'Approve ${{ upper(parameters.targetEnvironment) }}'
+              inputs:
+                instructions: |
+                  Approve LCMBIAR deployment to ${{ upper(parameters.targetEnvironment) }}.
+                  Build: $(Build.BuildNumber) | Conflict: ${{ parameters.conflictResolution }}
+
+      - job: PreDeployHealthCheck
+        displayName: 'Raylight Health Check'
+        ${{ if parameters.requireApproval }}:
+          dependsOn: WaitForApproval
         pool: $(agentPool)
-        
-        steps:
-          - task: AzureKeyVault@2
-            displayName: 'Fetch BOBJ Credentials'
-            inputs:
-              azureSubscription: $(serviceConnectionName)
-              KeyVaultName: $(keyVaultName)
-              SecretsFilter: 'bobj-username,bobj-password'
-              RunAsPreJob: true
-              
-          - task: PowerShell@2
-            displayName: 'Create Backup of Target Environment'
-            inputs:
-              targetType: 'filePath'
-              filePath: '$(powershellScriptsPath)/Export-BOBJContent.ps1'
-              arguments: >
-                -ServerUrl "$(bobjServerUrl)"
-                -CmsServer "$(bobjCmsServer)"
-                -Username "$(bobj-username)"
-                -Password "$(bobj-password)"
-                -ExportFolder "/Public Folders"
-                -OutputPath "$(Build.ArtifactStagingDirectory)/backup"
-                -IncludeSecurityRights:$true
-                -BackupMode:$true
-              pwsh: true
-              
-          - task: PublishPipelineArtifact@1
-            displayName: 'Publish Backup Artifact'
-            inputs:
-              targetPath: '$(Build.ArtifactStagingDirectory)/backup'
-              artifact: 'backup-${{ parameters.targetEnvironment }}-$(Build.BuildId)'
-              publishLocation: 'pipeline'
-              
-      - job: ImportContent
-        displayName: 'Import BOBJ Content'
-        dependsOn: BackupExisting
-        condition: or(succeeded(), eq('${{ parameters.createBackup }}', 'false'))
-        pool: $(agentPool)
-        timeoutInMinutes: $(importTimeout)
-        
+        timeoutInMinutes: 5
         steps:
           - checkout: self
             clean: true
-            
-          - task: DownloadPipelineArtifact@2
-            displayName: 'Download LCMBIAR Artifact'
-            inputs:
-              buildType: 'current'
-              artifactName: '${{ parameters.artifactName }}'
-              targetPath: '$(Pipeline.Workspace)/lcmbiar'
-              
           - task: AzureKeyVault@2
-            displayName: 'Fetch BOBJ Credentials'
             inputs:
               azureSubscription: $(serviceConnectionName)
               KeyVaultName: $(keyVaultName)
               SecretsFilter: 'bobj-username,bobj-password'
               RunAsPreJob: true
-              
           - task: PowerShell@2
-            displayName: 'Test BOBJ Connection'
+            displayName: 'Check Raylight API'
             inputs:
               targetType: 'filePath'
               filePath: '$(powershellScriptsPath)/Get-BOBJConnection.ps1'
               arguments: >
-                -ServerUrl "$(bobjServerUrl)"
-                -CmsServer "$(bobjCmsServer)"
-                -CmsPort "$(bobjCmsPort)"
-                -Username "$(bobj-username)"
-                -Password "$(bobj-password)"
-                -AuthType "$(bobjAuthType)"
+                -ServerUrl "$(bobjServerUrl)" -CmsServer "$(bobjCmsServer)"
+                -CmsPort $(bobjCmsPort) -Username "$(bobj-username)"
+                -Password "$(bobj-password)" -AuthType "$(bobjAuthType)"
               pwsh: true
-              
+
+      - ${{ if parameters.createBackup }}:
+        - job: CreateBackup
+          displayName: 'Pre-Deployment Backup'
+          dependsOn: PreDeployHealthCheck
+          pool: $(agentPool)
+          timeoutInMinutes: $(exportTimeout)
+          steps:
+            - checkout: self
+              clean: true
+            - task: AzureKeyVault@2
+              inputs:
+                azureSubscription: $(serviceConnectionName)
+                KeyVaultName: $(keyVaultName)
+                SecretsFilter: 'bobj-username,bobj-password'
+                RunAsPreJob: true
+            - task: PowerShell@2
+              displayName: 'Backup via Raylight Export'
+              inputs:
+                targetType: 'filePath'
+                filePath: '$(powershellScriptsPath)/Export-BOBJContent.ps1'
+                arguments: >
+                  -ServerUrl "$(bobjServerUrl)" -CmsServer "$(bobjCmsServer)"
+                  -CmsPort $(bobjCmsPort) -Username "$(bobj-username)"
+                  -Password "$(bobj-password)" -AuthType "$(bobjAuthType)"
+                  -ExportFolder "/Public Folders" -OutputPath "$(Build.ArtifactStagingDirectory)/backup"
+                  -BackupMode -IncludeSecurityRights -IncludeDependencies
+                pwsh: true
+            - task: PublishPipelineArtifact@1
+              inputs:
+                targetPath: '$(Build.ArtifactStagingDirectory)/backup'
+                artifact: 'backup-${{ parameters.targetEnvironment }}-$(Build.BuildId)'
+                publishLocation: 'pipeline'
+
+      - job: ImportContent
+        displayName: 'Import LCMBIAR via Raylight'
+        dependsOn:
+          - PreDeployHealthCheck
+          - ${{ if parameters.createBackup }}:
+            - CreateBackup
+        pool: $(agentPool)
+        timeoutInMinutes: $(importTimeout)
+        steps:
+          - checkout: self
+            clean: true
+          - task: DownloadPipelineArtifact@2
+            inputs:
+              buildType: 'current'
+              artifactName: '${{ parameters.artifactName }}'
+              targetPath: '$(Pipeline.Workspace)/lcmbiar'
+          - task: AzureKeyVault@2
+            inputs:
+              azureSubscription: $(serviceConnectionName)
+              KeyVaultName: $(keyVaultName)
+              SecretsFilter: 'bobj-username,bobj-password'
+              RunAsPreJob: true
           - task: PowerShell@2
-            displayName: 'Import LCMBIAR to ${{ parameters.targetEnvironment }}'
+            displayName: 'Import via Promotion API'
             inputs:
               targetType: 'filePath'
               filePath: '$(powershellScriptsPath)/Import-BOBJContent.ps1'
               arguments: >
-                -ServerUrl "$(bobjServerUrl)"
-                -CmsServer "$(bobjCmsServer)"
-                -Username "$(bobj-username)"
-                -Password "$(bobj-password)"
+                -ServerUrl "$(bobjServerUrl)" -CmsServer "$(bobjCmsServer)"
+                -CmsPort $(bobjCmsPort) -Username "$(bobj-username)"
+                -Password "$(bobj-password)" -AuthType "$(bobjAuthType)"
                 -LcmbiarPath "$(Pipeline.Workspace)/lcmbiar"
                 -ConflictResolution "${{ parameters.conflictResolution }}"
                 -OverwriteSecurity:$${{ parameters.overwriteSecurity }}
                 -VerboseLogging:$(verboseLogging)
               pwsh: true
-              
-          - task: PowerShell@2
-            displayName: 'Verify Deployment'
+
+      - job: VerifyDeployment
+        displayName: 'Post-Deploy Verification'
+        dependsOn: ImportContent
+        pool: $(agentPool)
+        timeoutInMinutes: 10
+        steps:
+          - checkout: self
+            clean: true
+          - task: AzureKeyVault@2
             inputs:
-              targetType: 'inline'
-              script: |
-                Write-Host "Verifying deployment to ${{ parameters.targetEnvironment }}..."
-                
-                # Verify imported objects exist
-                $verifyScript = "$(powershellScriptsPath)/Validate-LCMBIARPackage.ps1"
-                & $verifyScript `
-                  -ServerUrl "$(bobjServerUrl)" `
-                  -CmsServer "$(bobjCmsServer)" `
-                  -Username "$(bobj-username)" `
-                  -Password "$(bobj-password)" `
-                  -VerifyDeployment
-                  
-                if ($LASTEXITCODE -ne 0) {
-                  Write-Host "##vso[task.logissue type=error]Deployment verification failed"
-                  exit 1
-                }
-                
-                Write-Host "Deployment verification successful"
-              pwsh: true
-              
+              azureSubscription: $(serviceConnectionName)
+              KeyVaultName: $(keyVaultName)
+              SecretsFilter: 'bobj-username,bobj-password'
+              RunAsPreJob: true
           - task: PowerShell@2
-            displayName: 'Generate Deployment Report'
+            displayName: 'Raylight Verification'
             inputs:
-              targetType: 'inline'
-              script: |
-                $deploymentReport = @{
-                  BuildId = "$(Build.BuildId)"
-                  TargetEnvironment = "${{ parameters.targetEnvironment }}"
-                  ConflictResolution = "${{ parameters.conflictResolution }}"
-                  Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
-                  Status = "Success"
-                }
-                $deploymentReport | ConvertTo-Json | Out-File "$(Build.ArtifactStagingDirectory)/deployment-report.json"
+              targetType: 'filePath'
+              filePath: '$(powershellScriptsPath)/Validate-LCMBIARPackage.ps1'
+              arguments: >
+                -VerifyDeployment -ServerUrl "$(bobjServerUrl)"
+                -CmsServer "$(bobjCmsServer)" -Username "$(bobj-username)"
+                -Password "$(bobj-password)" -AuthType "$(bobjAuthType)"
+                -OutputPath "$(Build.ArtifactStagingDirectory)/verify.json"
               pwsh: true
-            condition: succeeded()
-              
           - task: PublishPipelineArtifact@1
-            displayName: 'Publish Deployment Report'
             inputs:
-              targetPath: '$(Build.ArtifactStagingDirectory)/deployment-report.json'
-              artifact: 'deployment-report-${{ parameters.targetEnvironment }}-$(Build.BuildId)'
+              targetPath: '$(Build.ArtifactStagingDirectory)/verify.json'
+              artifact: 'verify-${{ parameters.targetEnvironment }}-$(Build.BuildId)'
               publishLocation: 'pipeline'
             condition: always()

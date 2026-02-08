@@ -1,3 +1,4 @@
-# Python dependencies for BOBJ CI/CD automation scripts
+# Python dependencies for BOBJ Raylight REST API automation
 requests>=2.28.0
+urllib3>=1.26.0
 dataclasses>=0.6;python_version<"3.7"

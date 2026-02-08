@@ -1,13 +1,14 @@
 <#
 .SYNOPSIS
-    Exports SAP BusinessObjects content to LCMBIAR archive.
+    Exports SAP BusinessObjects content to LCMBIAR archive via Raylight REST API.
 
 .DESCRIPTION
-    This script connects to a SAP BusinessObjects system and exports content
-    (reports, universes, connections, folders) to an LCMBIAR file for transport.
+    Connects to a SAP BusinessObjects system using the Raylight REST API (biprws)
+    and exports content (reports, universes, connections, folders) to an LCMBIAR
+    file for promotion/transport to higher environments.
 
 .PARAMETER ServerUrl
-    The URL of the BOBJ server (e.g., http://bobj-server:8080)
+    The base URL of the BOBJ server (e.g., https://bobj-server:8080)
 
 .PARAMETER CmsServer
     The CMS server hostname or IP address
@@ -43,63 +44,62 @@
     Enable verbose logging
 
 .EXAMPLE
-    .\Export-BOBJContent.ps1 -ServerUrl "http://bobj:8080" -CmsServer "bobj-cms" -Username "admin" -Password "pass" -ExportFolder "/Public Folders" -OutputPath "./export"
+    .\Export-BOBJContent.ps1 -ServerUrl "https://bobj:8080" -CmsServer "bobj-cms" -Username "admin" -Password "pass" -ExportFolder "/Public Folders" -OutputPath "./export"
 #>
 
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
     [string]$ServerUrl,
-    
+
     [Parameter(Mandatory = $true)]
     [string]$CmsServer,
-    
+
     [Parameter(Mandatory = $false)]
     [int]$CmsPort = 6400,
-    
+
     [Parameter(Mandatory = $true)]
     [string]$Username,
-    
+
     [Parameter(Mandatory = $true)]
     [string]$Password,
-    
+
     [Parameter(Mandatory = $false)]
     [ValidateSet('secEnterprise', 'secLDAP', 'secWinAD', 'secSAPR3')]
     [string]$AuthType = 'secEnterprise',
-    
+
     [Parameter(Mandatory = $false)]
     [string]$ExportFolder = '/Public Folders',
-    
+
     [Parameter(Mandatory = $true)]
     [string]$OutputPath,
-    
+
     [Parameter(Mandatory = $false)]
     [switch]$IncludeSecurityRights = $true,
-    
+
     [Parameter(Mandatory = $false)]
     [switch]$IncludeDependencies = $true,
-    
+
     [Parameter(Mandatory = $false)]
     [switch]$BackupMode = $false,
-    
+
     [Parameter(Mandatory = $false)]
     [switch]$VerboseLogging = $false
 )
 
-# Set error action preference
 $ErrorActionPreference = 'Stop'
 
-# Import logging functions
+# ---------------------------------------------------------------------------
+# Logging
+# ---------------------------------------------------------------------------
 function Write-Log {
     param(
         [string]$Message,
         [ValidateSet('INFO', 'WARN', 'ERROR', 'DEBUG')]
         [string]$Level = 'INFO'
     )
-    
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     $logMessage = "[$timestamp] [$Level] $Message"
-    
     switch ($Level) {
         'ERROR' { Write-Host $logMessage -ForegroundColor Red }
         'WARN'  { Write-Host $logMessage -ForegroundColor Yellow }
@@ -108,33 +108,36 @@ function Write-Log {
     }
 }
 
-function Get-BOBJSession {
+# ---------------------------------------------------------------------------
+# Raylight REST API helpers
+# ---------------------------------------------------------------------------
+function Get-RaylightSession {
     param(
         [string]$ServerUrl,
         [string]$Username,
         [string]$Password,
         [string]$AuthType
     )
-    
-    Write-Log "Authenticating to BOBJ server: $ServerUrl" -Level INFO
-    
+    Write-Log "Authenticating to BOBJ via Raylight API: $ServerUrl" -Level INFO
+
     $loginUrl = "$ServerUrl/biprws/logon/long"
-    
-    $loginBody = @{
-        userName = $Username
-        password = $Password
-        auth = $AuthType
-    } | ConvertTo-Json
-    
+    $loginBody = @"
+<attrs xmlns="http://www.sap.com/rws/bip">
+  <attr name="userName" type="string">$Username</attr>
+  <attr name="password" type="string">$Password</attr>
+  <attr name="auth" type="string" possibilities="secEnterprise,secLDAP,secWinAD,secSAPR3">$AuthType</attr>
+</attrs>
+"@
+
     try {
-        $response = Invoke-RestMethod -Uri $loginUrl -Method Post -Body $loginBody -ContentType 'application/json'
+        $response = Invoke-RestMethod -Uri $loginUrl -Method Post -Body $loginBody `
+            -ContentType 'application/xml' -Headers @{ 'Accept' = 'application/json' }
+
         $logonToken = $response.logonToken
-        
         if (-not $logonToken) {
-            throw "Failed to obtain logon token"
+            throw "No logonToken in response"
         }
-        
-        Write-Log "Successfully authenticated to BOBJ" -Level INFO
+        Write-Log "Authentication successful" -Level INFO
         return $logonToken
     }
     catch {
@@ -143,194 +146,310 @@ function Get-BOBJSession {
     }
 }
 
-function Get-FolderContents {
+function Test-RaylightHealth {
+    param(
+        [string]$ServerUrl,
+        [string]$LogonToken
+    )
+    Write-Log "Checking Raylight API health..." -Level DEBUG
+    $headers = @{
+        'X-SAP-LogonToken' = "`"$LogonToken`""
+        'Accept'           = 'application/json'
+    }
+    try {
+        $about = Invoke-RestMethod -Uri "$ServerUrl/biprws/raylight/v1/about" -Method Get -Headers $headers
+        Write-Log "Raylight API healthy - version: $($about.version)" -Level INFO
+        return $about
+    }
+    catch {
+        Write-Log "Raylight API health check failed: $_" -Level ERROR
+        throw
+    }
+}
+
+function Resolve-FolderPath {
     param(
         [string]$ServerUrl,
         [string]$LogonToken,
         [string]$FolderPath
     )
-    
-    Write-Log "Fetching contents of folder: $FolderPath" -Level DEBUG
-    
+    Write-Log "Resolving folder path: $FolderPath" -Level DEBUG
     $headers = @{
-        'X-SAP-LogonToken' = $LogonToken
-        'Accept' = 'application/json'
+        'X-SAP-LogonToken' = "`"$LogonToken`""
+        'Accept'           = 'application/json'
     }
-    
-    # Get folder ID from path
+    Add-Type -AssemblyName System.Web
     $encodedPath = [System.Web.HttpUtility]::UrlEncode($FolderPath)
-    $folderUrl = "$ServerUrl/biprws/infostore/folder?path=$encodedPath"
-    
+    $url = "$ServerUrl/biprws/infostore/folder?path=$encodedPath"
     try {
-        $folderInfo = Invoke-RestMethod -Uri $folderUrl -Method Get -Headers $headers
-        return $folderInfo
+        $folderInfo = Invoke-RestMethod -Uri $url -Method Get -Headers $headers
+        $folderId = $folderInfo.entries.id
+        if (-not $folderId) {
+            $folderId = $folderInfo.id
+        }
+        if (-not $folderId) {
+            throw "Could not resolve folder ID for path: $FolderPath"
+        }
+        Write-Log "Folder resolved - ID: $folderId" -Level DEBUG
+        return $folderId
     }
     catch {
-        Write-Log "Failed to get folder contents: $_" -Level WARN
-        return $null
+        Write-Log "Failed to resolve folder: $_" -Level ERROR
+        throw
     }
 }
 
-function Export-ToLCMBIAR {
+function New-PromotionJob {
     param(
         [string]$ServerUrl,
         [string]$LogonToken,
+        [string]$FolderId,
         [string]$FolderPath,
-        [string]$OutputPath,
         [bool]$IncludeSecurity,
         [bool]$IncludeDeps
     )
-    
-    Write-Log "Starting LCMBIAR export from: $FolderPath" -Level INFO
-    
+    Write-Log "Creating promotion export job for folder ID: $FolderId" -Level INFO
     $headers = @{
-        'X-SAP-LogonToken' = $LogonToken
-        'Accept' = 'application/json'
-        'Content-Type' = 'application/json'
+        'X-SAP-LogonToken' = "`"$LogonToken`""
+        'Accept'           = 'application/json'
+        'Content-Type'     = 'application/json'
     }
-    
-    # Create promotion job
-    $promotionJob = @{
-        name = "Export_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
-        sourcePath = $FolderPath
+
+    $jobName = "Export_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+    $jobBody = @{
+        name                = $jobName
+        description         = "CI/CD export of $FolderPath"
+        sourceType          = 'folder'
+        sourceId            = $FolderId
         includeSecurityRights = $IncludeSecurity
         includeDependencies = $IncludeDeps
-        exportType = "LCMBIAR"
-    }
-    
-    $promotionUrl = "$ServerUrl/biprws/lcm/promotions"
-    
+        exportFormat        = 'lcmbiar'
+    } | ConvertTo-Json
+
     try {
-        Write-Log "Creating promotion job..." -Level DEBUG
-        $jobResponse = Invoke-RestMethod -Uri $promotionUrl -Method Post -Headers $headers -Body ($promotionJob | ConvertTo-Json)
-        
-        $jobId = $jobResponse.id
-        Write-Log "Promotion job created with ID: $jobId" -Level INFO
-        
-        # Wait for job completion
-        $maxAttempts = 60
-        $attempts = 0
-        $completed = $false
-        
-        while (-not $completed -and $attempts -lt $maxAttempts) {
-            Start-Sleep -Seconds 5
-            $attempts++
-            
-            $statusUrl = "$ServerUrl/biprws/lcm/promotions/$jobId/status"
-            $status = Invoke-RestMethod -Uri $statusUrl -Method Get -Headers $headers
-            
-            Write-Log "Job status: $($status.state) (attempt $attempts/$maxAttempts)" -Level DEBUG
-            
-            if ($status.state -eq 'Completed') {
-                $completed = $true
-            }
-            elseif ($status.state -eq 'Failed') {
-                throw "Promotion job failed: $($status.errorMessage)"
-            }
+        $response = Invoke-RestMethod -Uri "$ServerUrl/biprws/promotion/" -Method Post `
+            -Headers $headers -Body $jobBody
+        $jobId = $response.id
+        if (-not $jobId) {
+            throw "No job ID returned from promotion API"
         }
-        
-        if (-not $completed) {
-            throw "Promotion job timed out after $maxAttempts attempts"
-        }
-        
-        # Download LCMBIAR file
-        Write-Log "Downloading LCMBIAR file..." -Level INFO
-        
-        $downloadUrl = "$ServerUrl/biprws/lcm/promotions/$jobId/download"
-        $lcmbiarFile = Join-Path $OutputPath "export_$(Get-Date -Format 'yyyyMMdd_HHmmss').lcmbiar"
-        
-        # Ensure output directory exists
-        if (-not (Test-Path $OutputPath)) {
-            New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
-        }
-        
-        Invoke-WebRequest -Uri $downloadUrl -Method Get -Headers $headers -OutFile $lcmbiarFile
-        
-        Write-Log "LCMBIAR file saved to: $lcmbiarFile" -Level INFO
-        
-        return @{
-            Success = $true
-            FilePath = $lcmbiarFile
-            JobId = $jobId
-        }
+        Write-Log "Promotion job created: $jobId ($jobName)" -Level INFO
+        return @{ Id = $jobId; Name = $jobName }
     }
     catch {
-        Write-Log "Export failed: $_" -Level ERROR
-        return @{
-            Success = $false
-            Error = $_.Exception.Message
-        }
+        Write-Log "Failed to create promotion job: $_" -Level ERROR
+        throw
     }
 }
 
-function Close-BOBJSession {
+function Start-Promotion {
+    param(
+        [string]$ServerUrl,
+        [string]$LogonToken,
+        [string]$JobId
+    )
+    Write-Log "Starting promotion job: $JobId" -Level INFO
+    $headers = @{
+        'X-SAP-LogonToken' = "`"$LogonToken`""
+        'Accept'           = 'application/json'
+        'Content-Type'     = 'application/json'
+    }
+    try {
+        Invoke-RestMethod -Uri "$ServerUrl/biprws/promotion/$JobId/execute" -Method Post -Headers $headers | Out-Null
+        Write-Log "Promotion job started" -Level INFO
+    }
+    catch {
+        Write-Log "Failed to start promotion: $_" -Level ERROR
+        throw
+    }
+}
+
+function Wait-ForPromotion {
+    param(
+        [string]$ServerUrl,
+        [string]$LogonToken,
+        [string]$JobId,
+        [int]$TimeoutMinutes = 30,
+        [int]$PollIntervalSeconds = 5
+    )
+    Write-Log "Waiting for promotion job $JobId to complete (timeout: ${TimeoutMinutes}m)..." -Level INFO
+    $headers = @{
+        'X-SAP-LogonToken' = "`"$LogonToken`""
+        'Accept'           = 'application/json'
+    }
+
+    $deadline = (Get-Date).AddMinutes($TimeoutMinutes)
+    $statusUrl = "$ServerUrl/biprws/promotion/$JobId"
+
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds $PollIntervalSeconds
+        try {
+            $status = Invoke-RestMethod -Uri $statusUrl -Method Get -Headers $headers
+            $state = $status.status
+            if (-not $state) { $state = $status.state }
+            Write-Log "Job $JobId status: $state" -Level DEBUG
+
+            switch -Wildcard ($state) {
+                'Completed'  { Write-Log "Promotion job completed successfully" -Level INFO; return $status }
+                'Success'    { Write-Log "Promotion job completed successfully" -Level INFO; return $status }
+                'Failed'     { throw "Promotion job failed: $($status.errorMessage)" }
+                'Error'      { throw "Promotion job error: $($status.errorMessage)" }
+                'Cancelled'  { throw "Promotion job was cancelled" }
+            }
+        }
+        catch [System.Net.WebException] {
+            Write-Log "Transient error polling status, retrying... $_" -Level WARN
+        }
+    }
+    throw "Promotion job $JobId timed out after $TimeoutMinutes minutes"
+}
+
+function Get-LcmbiarDownload {
+    param(
+        [string]$ServerUrl,
+        [string]$LogonToken,
+        [string]$JobId,
+        [string]$OutputPath
+    )
+    Write-Log "Downloading LCMBIAR from promotion job: $JobId" -Level INFO
+
+    $headers = @{
+        'X-SAP-LogonToken' = "`"$LogonToken`""
+        'Accept'           = 'application/octet-stream'
+    }
+
+    if (-not (Test-Path $OutputPath)) {
+        New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
+    }
+
+    $lcmbiarFile = Join-Path $OutputPath "export_$(Get-Date -Format 'yyyyMMdd_HHmmss').lcmbiar"
+    $downloadUrl = "$ServerUrl/biprws/promotion/$JobId/lcmbiar"
+
+    try {
+        Invoke-WebRequest -Uri $downloadUrl -Method Get -Headers $headers -OutFile $lcmbiarFile
+        $fileInfo = Get-Item $lcmbiarFile
+        Write-Log "LCMBIAR downloaded: $lcmbiarFile ($([math]::Round($fileInfo.Length / 1MB, 2)) MB)" -Level INFO
+        return $lcmbiarFile
+    }
+    catch {
+        Write-Log "Failed to download LCMBIAR: $_" -Level ERROR
+        throw
+    }
+}
+
+function New-ExportManifest {
+    param(
+        [string]$LcmbiarPath,
+        [string]$JobId,
+        [string]$SourceFolder,
+        [string]$ServerUrl
+    )
+    $fileInfo = Get-Item $LcmbiarPath
+    $sha256 = (Get-FileHash -Path $LcmbiarPath -Algorithm SHA256).Hash
+
+    $manifest = @{
+        exportTimestamp = (Get-Date -Format 'o')
+        sourceServer   = $ServerUrl
+        sourceFolder   = $SourceFolder
+        promotionJobId = $JobId
+        lcmbiarFile    = $fileInfo.Name
+        lcmbiarSizeBytes = $fileInfo.Length
+        sha256Checksum = $sha256
+        exportedBy     = $env:BUILD_REQUESTEDFOR
+        buildId        = $env:BUILD_BUILDID
+        buildNumber    = $env:BUILD_BUILDNUMBER
+    } | ConvertTo-Json -Depth 5
+
+    $manifestPath = [System.IO.Path]::ChangeExtension($LcmbiarPath, '.manifest.json')
+    $manifest | Out-File -FilePath $manifestPath -Encoding UTF8
+    Write-Log "Export manifest written: $manifestPath" -Level INFO
+    return @{ ManifestPath = $manifestPath; SHA256 = $sha256 }
+}
+
+function Close-RaylightSession {
     param(
         [string]$ServerUrl,
         [string]$LogonToken
     )
-    
-    Write-Log "Closing BOBJ session..." -Level DEBUG
-    
-    $logoffUrl = "$ServerUrl/biprws/logoff"
+    Write-Log "Closing Raylight session..." -Level DEBUG
     $headers = @{
-        'X-SAP-LogonToken' = $LogonToken
+        'X-SAP-LogonToken' = "`"$LogonToken`""
     }
-    
     try {
-        Invoke-RestMethod -Uri $logoffUrl -Method Post -Headers $headers | Out-Null
-        Write-Log "Session closed successfully" -Level DEBUG
+        Invoke-RestMethod -Uri "$ServerUrl/biprws/logoff" -Method Post -Headers $headers | Out-Null
+        Write-Log "Session closed" -Level DEBUG
     }
     catch {
         Write-Log "Failed to close session cleanly: $_" -Level WARN
     }
 }
 
+# ---------------------------------------------------------------------------
 # Main execution
+# ---------------------------------------------------------------------------
+$logonToken = $null
 try {
-    Write-Log "=== BOBJ Content Export Started ===" -Level INFO
-    Write-Log "Server URL: $ServerUrl" -Level INFO
+    Write-Log "=== BOBJ Content Export (Raylight API) ===" -Level INFO
+    Write-Log "Server: $ServerUrl" -Level INFO
+    Write-Log "CMS: ${CmsServer}:${CmsPort}" -Level INFO
     Write-Log "Export Folder: $ExportFolder" -Level INFO
     Write-Log "Output Path: $OutputPath" -Level INFO
-    Write-Log "Include Security: $IncludeSecurityRights" -Level INFO
-    Write-Log "Include Dependencies: $IncludeDependencies" -Level INFO
-    Write-Log "Backup Mode: $BackupMode" -Level INFO
-    
-    # Add System.Web for URL encoding
-    Add-Type -AssemblyName System.Web
-    
-    # Authenticate
-    $logonToken = Get-BOBJSession -ServerUrl $ServerUrl -Username $Username -Password $Password -AuthType $AuthType
-    
-    # Export content
-    $exportResult = Export-ToLCMBIAR `
-        -ServerUrl $ServerUrl `
-        -LogonToken $logonToken `
-        -FolderPath $ExportFolder `
-        -OutputPath $OutputPath `
-        -IncludeSecurity $IncludeSecurityRights `
-        -IncludeDeps $IncludeDependencies
-    
-    # Close session
-    Close-BOBJSession -ServerUrl $ServerUrl -LogonToken $logonToken
-    
-    if ($exportResult.Success) {
-        Write-Log "=== Export Completed Successfully ===" -Level INFO
-        Write-Log "LCMBIAR file: $($exportResult.FilePath)" -Level INFO
-        
-        # Output for Azure DevOps
-        Write-Host "##vso[task.setvariable variable=lcmbiarPath]$($exportResult.FilePath)"
-        Write-Host "##vso[task.setvariable variable=exportJobId]$($exportResult.JobId)"
-        
-        exit 0
-    }
-    else {
-        Write-Log "=== Export Failed ===" -Level ERROR
-        Write-Log "Error: $($exportResult.Error)" -Level ERROR
-        exit 1
-    }
+    Write-Log "Security: $IncludeSecurityRights | Dependencies: $IncludeDependencies | Backup: $BackupMode" -Level INFO
+
+    # Step 1: Authenticate via Raylight logon
+    $logonToken = Get-RaylightSession -ServerUrl $ServerUrl -Username $Username -Password $Password -AuthType $AuthType
+
+    # Step 2: Health check
+    $aboutInfo = Test-RaylightHealth -ServerUrl $ServerUrl -LogonToken $logonToken
+
+    # Step 3: Resolve export folder to ID
+    $folderId = Resolve-FolderPath -ServerUrl $ServerUrl -LogonToken $logonToken -FolderPath $ExportFolder
+
+    # Step 4: Create promotion export job
+    $job = New-PromotionJob -ServerUrl $ServerUrl -LogonToken $logonToken `
+        -FolderId $folderId -FolderPath $ExportFolder `
+        -IncludeSecurity $IncludeSecurityRights -IncludeDeps $IncludeDependencies
+
+    # Step 5: Execute the promotion job
+    Start-Promotion -ServerUrl $ServerUrl -LogonToken $logonToken -JobId $job.Id
+
+    # Step 6: Poll until completion
+    $completedJob = Wait-ForPromotion -ServerUrl $ServerUrl -LogonToken $logonToken `
+        -JobId $job.Id -TimeoutMinutes 30
+
+    # Step 7: Download LCMBIAR archive
+    $lcmbiarFile = Get-LcmbiarDownload -ServerUrl $ServerUrl -LogonToken $logonToken `
+        -JobId $job.Id -OutputPath $OutputPath
+
+    # Step 8: Generate manifest with checksum
+    $manifestResult = New-ExportManifest -LcmbiarPath $lcmbiarFile -JobId $job.Id `
+        -SourceFolder $ExportFolder -ServerUrl $ServerUrl
+
+    # Step 9: Close session
+    Close-RaylightSession -ServerUrl $ServerUrl -LogonToken $logonToken
+    $logonToken = $null
+
+    Write-Log "=== Export Completed Successfully ===" -Level INFO
+    Write-Log "LCMBIAR: $lcmbiarFile" -Level INFO
+    Write-Log "SHA256: $($manifestResult.SHA256)" -Level INFO
+
+    # Azure DevOps output variables
+    Write-Host "##vso[task.setvariable variable=lcmbiarPath;isOutput=true]$lcmbiarFile"
+    Write-Host "##vso[task.setvariable variable=lcmbiarSHA256;isOutput=true]$($manifestResult.SHA256)"
+    Write-Host "##vso[task.setvariable variable=exportJobId;isOutput=true]$($job.Id)"
+    Write-Host "##vso[task.setvariable variable=manifestPath;isOutput=true]$($manifestResult.ManifestPath)"
+
+    exit 0
 }
 catch {
-    Write-Log "Unhandled error: $_" -Level ERROR
+    Write-Log "=== Export Failed ===" -Level ERROR
+    Write-Log "Error: $($_.Exception.Message)" -Level ERROR
     Write-Log $_.ScriptStackTrace -Level ERROR
+    Write-Host "##vso[task.logissue type=error]BOBJ export failed: $($_.Exception.Message)"
     exit 1
+}
+finally {
+    if ($logonToken) {
+        Close-RaylightSession -ServerUrl $ServerUrl -LogonToken $logonToken
+    }
 }

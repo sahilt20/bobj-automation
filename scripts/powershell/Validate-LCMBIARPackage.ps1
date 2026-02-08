@@ -1,255 +1,163 @@
 <#
 .SYNOPSIS
-    Validates LCMBIAR package and optionally verifies deployment.
+    Validates LCMBIAR packages and verifies deployments via Raylight REST API.
 
 .DESCRIPTION
-    Validates the structure and contents of an LCMBIAR package, or verifies
-    that a deployment was successful by checking objects in the target system.
-
-.PARAMETER ServerUrl
-    The URL of the BOBJ server (required for VerifyDeployment)
-
-.PARAMETER CmsServer
-    The CMS server hostname
-
-.PARAMETER Username
-    Username for authentication
-
-.PARAMETER Password
-    Password for authentication
-
-.PARAMETER LcmbiarPath
-    Path to LCMBIAR file or directory (for validation mode)
-
-.PARAMETER VerifyDeployment
-    Switch to enable deployment verification mode
-
-.PARAMETER OutputPath
-    Path for validation report output
+    Two modes:
+    1. Package Validation: structure, checksums, manifest, content integrity
+    2. Deployment Verification: Raylight /about + InfoStore health checks
 #>
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $false)]
-    [string]$ServerUrl,
-    
-    [Parameter(Mandatory = $false)]
-    [string]$CmsServer,
-    
-    [Parameter(Mandatory = $false)]
-    [string]$Username,
-    
-    [Parameter(Mandatory = $false)]
-    [string]$Password,
-    
-    [Parameter(Mandatory = $false)]
-    [string]$LcmbiarPath,
-    
-    [Parameter(Mandatory = $false)]
-    [switch]$VerifyDeployment,
-    
-    [Parameter(Mandatory = $false)]
-    [string]$OutputPath
+    [Parameter(Mandatory=$false)][string]$ServerUrl,
+    [Parameter(Mandatory=$false)][string]$CmsServer,
+    [Parameter(Mandatory=$false)][string]$Username,
+    [Parameter(Mandatory=$false)][string]$Password,
+    [Parameter(Mandatory=$false)][ValidateSet('secEnterprise','secLDAP','secWinAD','secSAPR3')][string]$AuthType = 'secEnterprise',
+    [Parameter(Mandatory=$false)][string]$LcmbiarPath,
+    [Parameter(Mandatory=$false)][string]$ExpectedChecksum,
+    [Parameter(Mandatory=$false)][switch]$VerifyDeployment,
+    [Parameter(Mandatory=$false)][string]$OutputPath
 )
 
 $ErrorActionPreference = 'Stop'
 
 function Write-Log {
     param([string]$Message, [string]$Level = 'INFO')
-    $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $ts = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     switch ($Level) {
-        'ERROR' { Write-Host "[$timestamp] [$Level] $Message" -ForegroundColor Red }
-        'WARN'  { Write-Host "[$timestamp] [$Level] $Message" -ForegroundColor Yellow }
-        'OK'    { Write-Host "[$timestamp] [$Level] $Message" -ForegroundColor Green }
-        default { Write-Host "[$timestamp] [$Level] $Message" }
+        'ERROR' { Write-Host "[$ts] [$Level] $Message" -ForegroundColor Red }
+        'WARN'  { Write-Host "[$ts] [$Level] $Message" -ForegroundColor Yellow }
+        'OK'    { Write-Host "[$ts] [$Level] $Message" -ForegroundColor Green }
+        default { Write-Host "[$ts] [$Level] $Message" }
     }
 }
 
-function Test-LcmbiarStructure {
-    param([string]$Path)
-    
-    $report = @{
-        valid = $true
-        objectCount = 0
-        warnings = @()
-        errors = @()
-        objects = @()
-    }
-    
-    Write-Log "Validating LCMBIAR structure at: $Path"
-    
+function Test-LcmbiarPackage {
+    param([string]$Path, [string]$ExpectedHash)
+    $report = @{ valid=$true; objectCount=0; totalSizeBytes=0; warnings=@(); errors=@(); objects=@(); manifestFound=$false; checksumValid=$null; sha256=$null }
+
     if (Test-Path $Path -PathType Container) {
         $files = Get-ChildItem -Path $Path -Recurse -File
         $report.objectCount = $files.Count
-        
-        # Check for manifest
+        $report.totalSizeBytes = ($files | Measure-Object -Property Length -Sum).Sum
+        if ($report.objectCount -eq 0) { $report.errors += "No files found"; $report.valid = $false; return $report }
+
         $manifest = $files | Where-Object { $_.Name -like '*manifest*' -or $_.Name -like '*.xml' }
-        if (-not $manifest) {
-            $report.warnings += "No manifest file found"
+        $report.manifestFound = [bool]$manifest
+
+        $lcm = $files | Where-Object { $_.Extension -eq '.lcmbiar' }
+        foreach ($f in $lcm) {
+            $hash = (Get-FileHash -Path $f.FullName -Algorithm SHA256).Hash
+            $report.objects += @{ name=$f.Name; size=$f.Length; sha256=$hash }
+            $report.sha256 = $hash
+            if ($ExpectedHash -and $hash -ne $ExpectedHash) {
+                $report.errors += "Checksum mismatch for $($f.Name)"
+                $report.checksumValid = $false; $report.valid = $false
+            } elseif ($ExpectedHash) { $report.checksumValid = $true }
         }
-        
-        # Check for content files
-        $contentFiles = $files | Where-Object { $_.Length -gt 0 }
-        if ($contentFiles.Count -eq 0) {
-            $report.errors += "No content files found"
-            $report.valid = $false
-        }
-        
-        # Log file summary
-        foreach ($file in $files | Select-Object -First 20) {
-            $report.objects += @{
-                name = $file.Name
-                size = $file.Length
-                type = $file.Extension
-            }
-        }
+
+        $empty = $files | Where-Object { $_.Length -eq 0 }
+        if ($empty.Count -gt 0) { $report.warnings += "$($empty.Count) empty file(s)" }
     }
     else {
-        # Single file
         $file = Get-Item $Path
-        if ($file.Length -eq 0) {
-            $report.errors += "LCMBIAR file is empty"
-            $report.valid = $false
-        }
-        else {
-            $report.objectCount = 1
-            $report.objects += @{
-                name = $file.Name
-                size = $file.Length
-                type = $file.Extension
-            }
+        if ($file.Length -eq 0) { $report.errors += "File is empty"; $report.valid = $false; return $report }
+        $hash = (Get-FileHash -Path $Path -Algorithm SHA256).Hash
+        $report.objectCount = 1; $report.totalSizeBytes = $file.Length; $report.sha256 = $hash
+        $report.objects += @{ name=$file.Name; size=$file.Length; sha256=$hash }
+        if ($ExpectedHash) {
+            if ($hash -ne $ExpectedHash) { $report.errors += "Checksum mismatch"; $report.checksumValid = $false; $report.valid = $false }
+            else { $report.checksumValid = $true }
         }
     }
-    
     return $report
 }
 
-function Test-Deployment {
-    param(
-        [string]$ServerUrl,
-        [string]$Username,
-        [string]$Password
-    )
-    
-    Write-Log "Verifying deployment..."
-    
-    $loginUrl = "$ServerUrl/biprws/logon/long"
-    $loginBody = @{
-        userName = $Username
-        password = $Password
-        auth = 'secEnterprise'
-    } | ConvertTo-Json
-    
+function Test-RaylightDeployment {
+    param([string]$ServerUrl, [string]$Username, [string]$Password, [string]$AuthType)
+    $report = @{ verified=$false; serverAccessible=$false; authenticated=$false; raylightHealthy=$false; infostoreOk=$false; serverVersion=$null; errors=@() }
+
     try {
-        $response = Invoke-RestMethod -Uri $loginUrl -Method Post -Body $loginBody -ContentType 'application/json'
-        $logonToken = $response.logonToken
-        
-        if (-not $logonToken) {
-            Write-Log "Failed to authenticate for verification" -Level ERROR
-            return $false
-        }
-        
-        # Check system status
-        $headers = @{
-            'X-SAP-LogonToken' = $logonToken
-            'Accept' = 'application/json'
-        }
-        
-        # Try to access infostore
-        try {
-            $testUrl = "$ServerUrl/biprws/infostore"
-            $result = Invoke-RestMethod -Uri $testUrl -Method Get -Headers $headers
-            Write-Log "System accessible and responding" -Level OK
-            
-            # Logout
-            Invoke-RestMethod -Uri "$ServerUrl/biprws/logoff" -Method Post -Headers $headers | Out-Null
-            
-            return $true
-        }
-        catch {
-            Write-Log "System access test failed: $_" -Level WARN
-            return $true  # May still be OK
-        }
+        $resp = Invoke-WebRequest -Uri "$ServerUrl/biprws" -Method Get -UseBasicParsing -TimeoutSec 30
+        $report.serverAccessible = ($resp.StatusCode -eq 200)
     }
-    catch {
-        Write-Log "Deployment verification failed: $_" -Level ERROR
-        return $false
+    catch { $report.errors += "Server unreachable: $($_.Exception.Message)"; return $report }
+
+    try {
+        $body = @{ userName=$Username; password=$Password; auth=$AuthType } | ConvertTo-Json
+        $auth = Invoke-RestMethod -Uri "$ServerUrl/biprws/logon/long" -Method Post -Body $body -ContentType 'application/json' -TimeoutSec 60
+        $logonToken = $auth.logonToken
+        if ($logonToken) { $report.authenticated = $true } else { $report.errors += "No logon token"; return $report }
     }
+    catch { $report.errors += "Auth failed: $($_.Exception.Message)"; return $report }
+
+    $headers = @{ 'X-SAP-LogonToken' = """$logonToken"""; 'Accept' = 'application/json' }
+
+    try {
+        $about = Invoke-RestMethod -Uri "$ServerUrl/biprws/raylight/v1/about" -Method Get -Headers $headers -TimeoutSec 30
+        $report.raylightHealthy = $true
+        $report.serverVersion = "$($about.productName) v$($about.productVersion)"
+    }
+    catch { $report.errors += "Raylight unhealthy: $($_.Exception.Message)" }
+
+    try {
+        Invoke-RestMethod -Uri "$ServerUrl/biprws/infostore" -Method Get -Headers $headers -TimeoutSec 30 | Out-Null
+        $report.infostoreOk = $true
+    }
+    catch { $report.errors += "InfoStore error: $($_.Exception.Message)" }
+
+    try { Invoke-RestMethod -Uri "$ServerUrl/biprws/logoff" -Method Post -Headers $headers | Out-Null } catch { }
+
+    $report.verified = $report.serverAccessible -and $report.authenticated -and $report.raylightHealthy
+    return $report
 }
 
-# Main execution
+# ── Main ────────────────────────────────────────────────────────────────────
+
 try {
-    Write-Log "=== LCMBIAR Validation ==="
-    
+    Write-Log "================================================================"
+    Write-Log "  LCMBIAR Validation / Deployment Verification"
+    Write-Log "================================================================"
+
     if ($VerifyDeployment) {
-        # Deployment verification mode
-        if (-not $ServerUrl -or -not $Username -or -not $Password) {
-            Write-Log "ServerUrl, Username, and Password required for deployment verification" -Level ERROR
-            exit 1
+        if (-not $ServerUrl -or -not $Username -or -not $Password) { Write-Log "ServerUrl/Username/Password required" -Level ERROR; exit 1 }
+        $report = Test-RaylightDeployment -ServerUrl $ServerUrl -Username $Username -Password $Password -AuthType $AuthType
+
+        if ($OutputPath) {
+            $dir = Split-Path $OutputPath -Parent
+            if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+            $report | ConvertTo-Json -Depth 5 | Out-File $OutputPath -Encoding UTF8
         }
-        
-        $success = Test-Deployment -ServerUrl $ServerUrl -Username $Username -Password $Password
-        
-        if ($success) {
-            Write-Log "=== Deployment Verification Passed ===" -Level OK
-            exit 0
-        }
-        else {
-            Write-Log "=== Deployment Verification Failed ===" -Level ERROR
-            exit 1
-        }
+
+        Write-Host "##vso[task.setvariable variable=deploymentVerified]$($report.verified)"
+        if ($report.verified) { Write-Log "Deployment Verification PASSED" -Level OK; exit 0 }
+        else { foreach ($e in $report.errors) { Write-Log $e -Level ERROR }; Write-Log "Deployment Verification FAILED" -Level ERROR; exit 1 }
     }
     else {
-        # Package validation mode
-        if (-not $LcmbiarPath) {
-            Write-Log "LcmbiarPath required for package validation" -Level ERROR
-            exit 1
-        }
-        
-        $report = Test-LcmbiarStructure -Path $LcmbiarPath
-        
-        # Output report
-        Write-Log "Validation complete"
-        Write-Log "Object count: $($report.objectCount)"
-        Write-Log "Valid: $($report.valid)"
-        
-        if ($report.warnings.Count -gt 0) {
-            foreach ($warn in $report.warnings) {
-                Write-Log "Warning: $warn" -Level WARN
-            }
-        }
-        
-        if ($report.errors.Count -gt 0) {
-            foreach ($err in $report.errors) {
-                Write-Log "Error: $err" -Level ERROR
-            }
-        }
-        
-        # Save report if output path specified
+        if (-not $LcmbiarPath -or -not (Test-Path $LcmbiarPath)) { Write-Log "Valid LcmbiarPath required" -Level ERROR; exit 1 }
+        $report = Test-LcmbiarPackage -Path $LcmbiarPath -ExpectedHash $ExpectedChecksum
+
+        Write-Log "Objects: $($report.objectCount) | Size: $([math]::Round($report.totalSizeBytes/1MB,2))MB | Valid: $($report.valid)"
+        foreach ($w in $report.warnings) { Write-Log "Warning: $w" -Level WARN }
+        foreach ($e in $report.errors) { Write-Log "Error: $e" -Level ERROR }
+
         if ($OutputPath) {
-            $reportDir = Split-Path $OutputPath -Parent
-            if ($reportDir -and -not (Test-Path $reportDir)) {
-                New-Item -ItemType Directory -Path $reportDir -Force | Out-Null
-            }
-            $report | ConvertTo-Json -Depth 5 | Out-File $OutputPath
-            Write-Log "Report saved to: $OutputPath"
+            $dir = Split-Path $OutputPath -Parent
+            if ($dir -and -not (Test-Path $dir)) { New-Item -ItemType Directory -Path $dir -Force | Out-Null }
+            $report | ConvertTo-Json -Depth 5 | Out-File $OutputPath -Encoding UTF8
         }
-        
-        # Set Azure DevOps variables
+
         Write-Host "##vso[task.setvariable variable=validationPassed]$($report.valid)"
         Write-Host "##vso[task.setvariable variable=objectCount]$($report.objectCount)"
-        
-        if ($report.valid) {
-            Write-Log "=== Validation Passed ===" -Level OK
-            exit 0
-        }
-        else {
-            Write-Log "=== Validation Failed ===" -Level ERROR
-            exit 1
-        }
+        if ($report.sha256) { Write-Host "##vso[task.setvariable variable=lcmbiarSHA256]$($report.sha256)" }
+
+        if ($report.valid) { Write-Log "Validation PASSED" -Level OK; exit 0 }
+        else { Write-Log "Validation FAILED" -Level ERROR; exit 1 }
     }
 }
 catch {
-    Write-Log "Unhandled error: $_" -Level ERROR
+    Write-Log "Error: $_" -Level ERROR
     exit 1
 }
