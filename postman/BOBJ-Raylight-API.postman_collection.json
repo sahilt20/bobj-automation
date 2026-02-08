@@ -1,0 +1,1298 @@
+{
+	"info": {
+		"_postman_id": "bobj-raylight-api-collection",
+		"name": "BOBJ Raylight REST API - LCMBIAR CI/CD",
+		"description": "# SAP BusinessObjects Raylight REST API Collection\n\nComprehensive Postman collection for testing the SAP BOBJ Raylight REST API endpoints used in the LCMBIAR CI/CD pipeline.\n\n## How to Import This Collection\n\n1. Open Postman and click **Import** (top-left button or Ctrl+O / Cmd+O)\n2. Choose one of these methods:\n   - **File**: Click \"Upload Files\" and select `BOBJ-Raylight-API.postman_collection.json`\n   - **Folder**: Select the entire `postman/` folder to import both the collection and environment\n   - **Drag & Drop**: Drag the JSON file directly into the Postman window\n3. Also import the environment file: `BOBJ-Raylight-API.postman_environment.json`\n4. Select the imported environment from the top-right environment dropdown\n5. Edit the environment variables (click the eye icon) and set your server URL, credentials, etc.\n\n## How to Export This Collection\n\n1. In Postman, right-click the collection name in the sidebar\n2. Click **Export**\n3. Choose **Collection v2.1** format\n4. Save to `postman/BOBJ-Raylight-API.postman_collection.json` in the repo\n5. To export the environment: click the gear icon next to the environment dropdown → select the environment → click **Export** → save as `postman/BOBJ-Raylight-API.postman_environment.json`\n\n## Endpoints Covered (21 total)\n\n| Category | Count | Endpoints |\n|----------|-------|-----------|\n| Authentication | 2 | Logon, Logoff |\n| Health & Info | 2 | Base connectivity, Raylight About |\n| Raylight Documents | 3 | List, Get by ID, Get Schedules |\n| InfoStore / CMS | 6 | Folder resolve, CUID lookup, Children, Object by CUID/SI_ID |\n| Promotion / LCM | 8 | Create, Status, Test, Promote, Execute, Results, Download LCMBIAR |\n\n## Typical Workflow\n\n### Export LCMBIAR (CI Pipeline)\n1. **Authenticate** → `POST /biprws/logon/long` → get logon token\n2. **Health Check** → `GET /biprws/raylight/v1/about` → verify server\n3. **Resolve Folder** → `GET /biprws/infostore/folder?path=...` → get folder ID\n4. **Create Promotion Job** → `POST /biprws/promotion/` → get job ID\n5. **Execute Job** → `POST /biprws/promotion/{id}/execute`\n6. **Poll Status** → `GET /biprws/promotion/{id}` → wait for completion\n7. **Download LCMBIAR** → `GET /biprws/promotion/{id}/lcmbiar` → save file\n8. **Logoff** → `POST /biprws/logoff`\n\n### Import LCMBIAR (CD Pipeline)\n1. **Authenticate** → `POST /biprws/logon/long`\n2. **Health Check** → `GET /biprws/raylight/v1/about`\n3. **Upload LCMBIAR** → `POST /biprws/promotion/` (multipart form-data)\n4. **Poll Status** → `GET /biprws/promotion/{id}`\n5. **Get Results** → `GET /biprws/promotion/{id}/results`\n6. **Logoff** → `POST /biprws/logoff`\n\n## Authentication\n\nAll requests (except logon) require the `X-SAP-LogonToken` header. The collection uses a collection-level pre-request script that auto-sets this header from the `logonToken` environment variable. Run the **Logon** request first to populate it.\n\n## Environment Variables\n\n| Variable | Description | Example |\n|----------|-------------|---------|\n| `baseUrl` | BOBJ server base URL | `https://bobj-dev.example.com:8080` |\n| `username` | BOBJ username | `Administrator` |\n| `password` | BOBJ password | `yourPassword` |\n| `authType` | Auth type | `secEnterprise` |\n| `logonToken` | Auto-set after logon | (auto) |\n| `folderId` | Folder ID for export | (auto or manual) |\n| `promotionJobId` | Promotion job ID | (auto) |\n| `documentId` | Document SI_ID for testing | `12345` |\n| `objectCuid` | Object CUID for testing | `AX.example123` |",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+	},
+	"auth": {
+		"type": "apikey",
+		"apikey": [
+			{
+				"key": "key",
+				"value": "X-SAP-LogonToken",
+				"type": "string"
+			},
+			{
+				"key": "value",
+				"value": "\"{{logonToken}}\"",
+				"type": "string"
+			},
+			{
+				"key": "in",
+				"value": "header",
+				"type": "string"
+			}
+		]
+	},
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					"// Auto-set X-SAP-LogonToken header for all requests except logon",
+					"const requestName = pm.info.requestName;",
+					"if (requestName !== 'Logon (Get Session Token)') {",
+					"    const token = pm.environment.get('logonToken');",
+					"    if (!token) {",
+					"        console.warn('No logonToken set. Run the Logon request first.');",
+					"    }",
+					"}"
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"exec": [
+					"// Common test: check response time",
+					"pm.test('Response time < 30s', function () {",
+					"    pm.expect(pm.response.responseTime).to.be.below(30000);",
+					"});"
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "baseUrl",
+			"value": "https://bobj-dev.example.com:8080",
+			"type": "string"
+		}
+	],
+	"item": [
+		{
+			"name": "1. Authentication & Session",
+			"description": "Endpoints for session lifecycle management. Always start with Logon and end with Logoff.",
+			"item": [
+				{
+					"name": "Logon (Get Session Token)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Logon token is returned', function () {",
+									"    const json = pm.response.json();",
+									"    pm.expect(json.logonToken).to.be.a('string');",
+									"    pm.environment.set('logonToken', json.logonToken);",
+									"    console.log('Logon token saved to environment');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "noauth"
+						},
+						"method": "POST",
+						"header": [
+							{ "key": "Content-Type", "value": "application/xml" },
+							{ "key": "Accept", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "<attrs xmlns=\"http://www.sap.com/rws/bip\">\n  <attr name=\"userName\" type=\"string\">{{username}}</attr>\n  <attr name=\"password\" type=\"string\">{{password}}</attr>\n  <attr name=\"auth\" type=\"string\" possibilities=\"secEnterprise,secLDAP,secWinAD,secSAPR3\">{{authType}}</attr>\n</attrs>"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/biprws/logon/long",
+							"host": ["{{baseUrl}}"],
+							"path": ["biprws", "logon", "long"]
+						},
+						"description": "Authenticates to SAP BusinessObjects and returns a session logon token.\n\nThe token is automatically saved to the `logonToken` environment variable and used by all subsequent requests via the `X-SAP-LogonToken` header.\n\n**Token lifetime**: ~60 minutes (refresh before expiry)."
+					},
+					"response": [
+						{
+							"name": "Success - Token Returned",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{ "key": "Content-Type", "value": "application/xml" },
+									{ "key": "Accept", "value": "application/json" }
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "<attrs xmlns=\"http://www.sap.com/rws/bip\">\n  <attr name=\"userName\" type=\"string\">Administrator</attr>\n  <attr name=\"password\" type=\"string\">P@ssw0rd</attr>\n  <attr name=\"auth\" type=\"string\" possibilities=\"secEnterprise,secLDAP,secWinAD,secSAPR3\">secEnterprise</attr>\n</attrs>"
+								},
+								"url": {
+									"raw": "{{baseUrl}}/biprws/logon/long",
+									"host": ["{{baseUrl}}"],
+									"path": ["biprws", "logon", "long"]
+								}
+							},
+							"status": "OK",
+							"code": 200,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"logonToken\": \"COMMANDCOM-LCM:6400@{3&2=5595,U3&p=40674.9596541551,Y7&4F=12,U3&63=secEnterprise,0P&66=60,03&68=secEnterprise:Administrator,0P&qe=100,U3&vz=SJaKWlVXQhRHnGrS7AY3Ay4fY.dlAxeFV2Z}\",\n  \"logonTokenExpiry\": 3600\n}"
+						},
+						{
+							"name": "Error - Invalid Credentials",
+							"originalRequest": {
+								"method": "POST",
+								"header": [
+									{ "key": "Content-Type", "value": "application/xml" },
+									{ "key": "Accept", "value": "application/json" }
+								],
+								"body": {
+									"mode": "raw",
+									"raw": "<attrs xmlns=\"http://www.sap.com/rws/bip\">\n  <attr name=\"userName\" type=\"string\">wronguser</attr>\n  <attr name=\"password\" type=\"string\">wrongpass</attr>\n  <attr name=\"auth\" type=\"string\">secEnterprise</attr>\n</attrs>"
+								},
+								"url": {
+									"raw": "{{baseUrl}}/biprws/logon/long",
+									"host": ["{{baseUrl}}"],
+									"path": ["biprws", "logon", "long"]
+								}
+							},
+							"status": "Unauthorized",
+							"code": 401,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"error_code\": \"FWB 00008\",\n  \"message\": \"Authentication failed. Please verify your logon credentials.\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Logoff (Close Session)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Clear logon token', function () {",
+									"    pm.environment.unset('logonToken');",
+									"    console.log('Logon token cleared from environment');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "X-SAP-LogonToken", "value": "\"{{logonToken}}\"" }
+						],
+						"url": {
+							"raw": "{{baseUrl}}/biprws/logoff",
+							"host": ["{{baseUrl}}"],
+							"path": ["biprws", "logoff"]
+						},
+						"description": "Invalidates the current session token and closes the server-side session.\n\nAlways call this when done to free server resources. The test script auto-clears the `logonToken` environment variable."
+					},
+					"response": [
+						{
+							"name": "Success - Session Closed",
+							"status": "OK",
+							"code": 200,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"message\": \"Session logged off successfully\"\n}"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "2. Health & Server Info",
+			"description": "Endpoints for checking BOBJ server health, connectivity, and Raylight API availability.",
+			"item": [
+				{
+					"name": "Base Connectivity Check",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('BIPRWS service is available', function () {",
+									"    const body = pm.response.text();",
+									"    pm.expect(body).to.include('biprws');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"auth": { "type": "noauth" },
+						"method": "GET",
+						"header": [
+							{ "key": "Accept", "value": "application/json" }
+						],
+						"url": {
+							"raw": "{{baseUrl}}/biprws",
+							"host": ["{{baseUrl}}"],
+							"path": ["biprws"]
+						},
+						"description": "Basic HTTP connectivity check to the BIPRWS service. Does not require authentication. Use this as the first step to verify the server is reachable."
+					},
+					"response": [
+						{
+							"name": "Success - Service Available",
+							"status": "OK",
+							"code": 200,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"biprws\": {\n    \"description\": \"SAP BusinessObjects RESTful Web Service\",\n    \"links\": [\n      { \"rel\": \"logon\", \"href\": \"/biprws/logon/long\" },\n      { \"rel\": \"raylight\", \"href\": \"/biprws/raylight/v1\" },\n      { \"rel\": \"infostore\", \"href\": \"/biprws/infostore\" },\n      { \"rel\": \"promotion\", \"href\": \"/biprws/promotion\" }\n    ]\n  }\n}"
+						}
+					]
+				},
+				{
+					"name": "Raylight About (Health & Version)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Raylight API returns version info', function () {",
+									"    const json = pm.response.json();",
+									"    pm.expect(json).to.have.property('productName');",
+									"    pm.expect(json).to.have.property('version');",
+									"    pm.environment.set('serverVersion', json.version);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Accept", "value": "application/json" }
+						],
+						"url": {
+							"raw": "{{baseUrl}}/biprws/raylight/v1/about",
+							"host": ["{{baseUrl}}"],
+							"path": ["biprws", "raylight", "v1", "about"]
+						},
+						"description": "Returns Raylight API version, BOBJ product name, build number, and server health status. Used as the primary health check in CI/CD pipelines."
+					},
+					"response": [
+						{
+							"name": "Success - Server Info",
+							"status": "OK",
+							"code": 200,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"productName\": \"SAP BusinessObjects Business Intelligence Platform\",\n  \"version\": \"4.3 SP03 Patch 3\",\n  \"build\": \"14.3.3.4350\",\n  \"server\": \"BOBJ-DEV-CMS01\",\n  \"os\": \"Windows Server 2019\",\n  \"startTime\": \"2026-01-15T06:00:00.000Z\",\n  \"status\": \"Running\"\n}"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "3. InfoStore / CMS Objects",
+			"description": "Endpoints for querying the CMS repository - folders, objects, CUIDs, and InfoStore entries.",
+			"item": [
+				{
+					"name": "InfoStore Health Check",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Accept", "value": "application/json" }
+						],
+						"url": {
+							"raw": "{{baseUrl}}/biprws/infostore",
+							"host": ["{{baseUrl}}"],
+							"path": ["biprws", "infostore"]
+						},
+						"description": "Basic InfoStore API health check. Verifies the CMS InfoStore service is accessible and responding."
+					},
+					"response": [
+						{
+							"name": "Success - InfoStore Available",
+							"status": "OK",
+							"code": 200,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"infostore\": {\n    \"description\": \"InfoStore REST API\",\n    \"links\": [\n      { \"rel\": \"folder\", \"href\": \"/biprws/infostore/folder\" },\n      { \"rel\": \"cuid_lookup\", \"href\": \"/biprws/infostore/cuid_lookup\" }\n    ]\n  }\n}"
+						}
+					]
+				},
+				{
+					"name": "Resolve Folder Path to ID",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Folder ID returned', function () {",
+									"    const json = pm.response.json();",
+									"    const id = json.entries ? json.entries[0].id : json.id;",
+									"    pm.expect(id).to.be.a('number');",
+									"    pm.environment.set('folderId', id);",
+									"    console.log('Folder ID saved: ' + id);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Accept", "value": "application/json" }
+						],
+						"url": {
+							"raw": "{{baseUrl}}/biprws/infostore/folder?path=/Public Folders",
+							"host": ["{{baseUrl}}"],
+							"path": ["biprws", "infostore", "folder"],
+							"query": [
+								{ "key": "path", "value": "/Public Folders", "description": "CMS folder path to resolve" }
+							]
+						},
+						"description": "Resolves a CMS folder path (e.g., `/Public Folders/Reports`) to its InfoStore SI_ID. The returned ID is used for promotion job creation.\n\nThe test script auto-saves the folder ID to the `folderId` environment variable."
+					},
+					"response": [
+						{
+							"name": "Success - Folder Resolved",
+							"status": "OK",
+							"code": 200,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"entries\": [\n    {\n      \"id\": 4512,\n      \"cuid\": \"AX.G0hsdaKEPvkNRj2Y\",\n      \"name\": \"Public Folders\",\n      \"type\": \"Folder\",\n      \"path\": \"/Public Folders\",\n      \"ownerName\": \"Administrator\",\n      \"created\": \"2024-03-15T10:30:00.000Z\",\n      \"updated\": \"2026-02-07T14:22:00.000Z\",\n      \"childCount\": 12\n    }\n  ]\n}"
+						},
+						{
+							"name": "Error - Folder Not Found",
+							"status": "Not Found",
+							"code": 404,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"error_code\": \"RWS 00070\",\n  \"message\": \"The folder path '/NonExistent/Folder' could not be found in the CMS repository.\"\n}"
+						}
+					]
+				},
+				{
+					"name": "List Folder Children",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Children list returned', function () {",
+									"    const json = pm.response.json();",
+									"    pm.expect(json.entries).to.be.an('array');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Accept", "value": "application/json" }
+						],
+						"url": {
+							"raw": "{{baseUrl}}/biprws/infostore/{{folderId}}/children?page=1&pageSize=50",
+							"host": ["{{baseUrl}}"],
+							"path": ["biprws", "infostore", "{{folderId}}", "children"],
+							"query": [
+								{ "key": "page", "value": "1", "description": "Page number (1-based)" },
+								{ "key": "pageSize", "value": "50", "description": "Items per page (max 50)" }
+							]
+						},
+						"description": "Lists child objects (reports, universes, sub-folders) within a folder by its SI_ID. Supports pagination."
+					},
+					"response": [
+						{
+							"name": "Success - Children Listed",
+							"status": "OK",
+							"code": 200,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"entries\": [\n    {\n      \"id\": 5001,\n      \"cuid\": \"AX.abc123\",\n      \"name\": \"Sales Dashboard\",\n      \"type\": \"Webi\",\n      \"path\": \"/Public Folders/Reports/Sales Dashboard\",\n      \"ownerName\": \"admin\",\n      \"created\": \"2025-06-10T09:00:00.000Z\",\n      \"updated\": \"2026-01-20T15:30:00.000Z\"\n    },\n    {\n      \"id\": 5002,\n      \"cuid\": \"AX.def456\",\n      \"name\": \"Finance Universe\",\n      \"type\": \"Universe\",\n      \"path\": \"/Public Folders/Universes/Finance Universe\",\n      \"ownerName\": \"admin\",\n      \"created\": \"2025-04-22T11:15:00.000Z\",\n      \"updated\": \"2026-02-01T08:45:00.000Z\"\n    },\n    {\n      \"id\": 5003,\n      \"cuid\": \"AX.ghi789\",\n      \"name\": \"Sub Reports\",\n      \"type\": \"Folder\",\n      \"path\": \"/Public Folders/Reports/Sub Reports\",\n      \"ownerName\": \"admin\",\n      \"created\": \"2025-08-01T07:00:00.000Z\",\n      \"childCount\": 5\n    }\n  ],\n  \"totalCount\": 3,\n  \"page\": 1,\n  \"pageSize\": 50\n}"
+						}
+					]
+				},
+				{
+					"name": "Get Object by SI_ID",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Accept", "value": "application/json" }
+						],
+						"url": {
+							"raw": "{{baseUrl}}/biprws/infostore/{{documentId}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["biprws", "infostore", "{{documentId}}"]
+						},
+						"description": "Retrieves a single CMS object by its SI_ID (numeric InfoStore identifier). Returns full object metadata."
+					},
+					"response": [
+						{
+							"name": "Success - Object Details",
+							"status": "OK",
+							"code": 200,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"id\": 5001,\n  \"cuid\": \"AX.abc123\",\n  \"name\": \"Sales Dashboard\",\n  \"type\": \"Webi\",\n  \"description\": \"Monthly sales dashboard for all regions\",\n  \"path\": \"/Public Folders/Reports/Sales Dashboard\",\n  \"ownerName\": \"admin\",\n  \"created\": \"2025-06-10T09:00:00.000Z\",\n  \"updated\": \"2026-01-20T15:30:00.000Z\",\n  \"parentId\": 4512,\n  \"size\": 245760,\n  \"flags\": {\n    \"isSchedulable\": true,\n    \"isViewable\": true\n  }\n}"
+						}
+					]
+				},
+				{
+					"name": "Get Object by CUID",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Accept", "value": "application/json" }
+						],
+						"url": {
+							"raw": "{{baseUrl}}/biprws/infostore/cuid_{{objectCuid}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["biprws", "infostore", "cuid_{{objectCuid}}"]
+						},
+						"description": "Retrieves a CMS object by its CUID (Cluster Unique Identifier). CUIDs are stable across environments and used for object tracking during promotion."
+					},
+					"response": [
+						{
+							"name": "Success - Object by CUID",
+							"status": "OK",
+							"code": 200,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"id\": 5001,\n  \"cuid\": \"AX.abc123\",\n  \"name\": \"Sales Dashboard\",\n  \"type\": \"Webi\",\n  \"path\": \"/Public Folders/Reports/Sales Dashboard\",\n  \"ownerName\": \"admin\",\n  \"created\": \"2025-06-10T09:00:00.000Z\",\n  \"updated\": \"2026-01-20T15:30:00.000Z\"\n}"
+						},
+						{
+							"name": "Error - CUID Not Found",
+							"status": "Not Found",
+							"code": 404,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"error_code\": \"RWS 00071\",\n  \"message\": \"Object with CUID 'AX.invalid' not found.\"\n}"
+						}
+					]
+				},
+				{
+					"name": "CUID Lookup (CMS Query)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Results returned', function () {",
+									"    const json = pm.response.json();",
+									"    pm.expect(json.entries).to.be.an('array');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Accept", "value": "application/json" }
+						],
+						"url": {
+							"raw": "{{baseUrl}}/biprws/infostore/cuid_lookup?cuid={{objectCuid}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["biprws", "infostore", "cuid_lookup"],
+							"query": [
+								{ "key": "cuid", "value": "{{objectCuid}}", "description": "CUID to look up" }
+							]
+						},
+						"description": "Looks up CMS objects by CUID. Used to verify objects exist after promotion/import."
+					},
+					"response": [
+						{
+							"name": "Success - Lookup Result",
+							"status": "OK",
+							"code": 200,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"entries\": [\n    {\n      \"id\": 5001,\n      \"cuid\": \"AX.abc123\",\n      \"name\": \"Sales Dashboard\",\n      \"type\": \"Webi\",\n      \"path\": \"/Public Folders/Reports/Sales Dashboard\"\n    }\n  ],\n  \"totalCount\": 1\n}"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "4. Raylight Documents",
+			"description": "Endpoints for querying documents via the Raylight v1 API - listing, details, and schedules.",
+			"item": [
+				{
+					"name": "List Documents",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Documents array returned', function () {",
+									"    const json = pm.response.json();",
+									"    pm.expect(json.documents || json.entries).to.be.an('array');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Accept", "value": "application/json" }
+						],
+						"url": {
+							"raw": "{{baseUrl}}/biprws/raylight/v1/documents?folderId={{folderId}}&type=Webi&page=1&pageSize=50",
+							"host": ["{{baseUrl}}"],
+							"path": ["biprws", "raylight", "v1", "documents"],
+							"query": [
+								{ "key": "folderId", "value": "{{folderId}}", "description": "Filter by parent folder ID" },
+								{ "key": "type", "value": "Webi", "description": "Filter by document type (Webi, CrystalReport, etc.)" },
+								{ "key": "page", "value": "1" },
+								{ "key": "pageSize", "value": "50" }
+							]
+						},
+						"description": "Lists documents accessible via Raylight API, with optional filtering by folder ID and document type."
+					},
+					"response": [
+						{
+							"name": "Success - Documents Listed",
+							"status": "OK",
+							"code": 200,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"documents\": [\n    {\n      \"id\": 5001,\n      \"name\": \"Sales Dashboard\",\n      \"type\": \"Webi\",\n      \"folderId\": 4512,\n      \"description\": \"Monthly sales overview\",\n      \"created\": \"2025-06-10T09:00:00.000Z\",\n      \"updated\": \"2026-01-20T15:30:00.000Z\",\n      \"owner\": \"admin\",\n      \"isScheduled\": true\n    },\n    {\n      \"id\": 5010,\n      \"name\": \"Inventory Report\",\n      \"type\": \"Webi\",\n      \"folderId\": 4512,\n      \"description\": \"Daily inventory tracking\",\n      \"created\": \"2025-09-01T08:00:00.000Z\",\n      \"updated\": \"2026-02-05T12:00:00.000Z\",\n      \"owner\": \"admin\",\n      \"isScheduled\": false\n    }\n  ],\n  \"totalCount\": 2,\n  \"page\": 1,\n  \"pageSize\": 50\n}"
+						}
+					]
+				},
+				{
+					"name": "Get Document by ID",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Accept", "value": "application/json" }
+						],
+						"url": {
+							"raw": "{{baseUrl}}/biprws/raylight/v1/documents/{{documentId}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["biprws", "raylight", "v1", "documents", "{{documentId}}"]
+						},
+						"description": "Retrieves full details of a specific document by its SI_ID via the Raylight API."
+					},
+					"response": [
+						{
+							"name": "Success - Document Details",
+							"status": "OK",
+							"code": 200,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"id\": 5001,\n  \"name\": \"Sales Dashboard\",\n  \"type\": \"Webi\",\n  \"folderId\": 4512,\n  \"description\": \"Monthly sales overview\",\n  \"created\": \"2025-06-10T09:00:00.000Z\",\n  \"updated\": \"2026-01-20T15:30:00.000Z\",\n  \"owner\": \"admin\",\n  \"dataproviders\": [\n    {\n      \"name\": \"SalesQuery\",\n      \"type\": \"UNX\",\n      \"universeId\": 3050\n    }\n  ],\n  \"reports\": [\n    { \"name\": \"Overview\", \"id\": 1 },\n    { \"name\": \"Regional Breakdown\", \"id\": 2 }\n  ]\n}"
+						}
+					]
+				},
+				{
+					"name": "Get Document Schedules",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Accept", "value": "application/json" }
+						],
+						"url": {
+							"raw": "{{baseUrl}}/biprws/raylight/v1/documents/{{documentId}}/schedules",
+							"host": ["{{baseUrl}}"],
+							"path": ["biprws", "raylight", "v1", "documents", "{{documentId}}", "schedules"]
+						},
+						"description": "Lists scheduled instances for a document. Useful for verifying report schedules are intact after promotion."
+					},
+					"response": [
+						{
+							"name": "Success - Schedules Listed",
+							"status": "OK",
+							"code": 200,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"schedules\": [\n    {\n      \"id\": 8001,\n      \"name\": \"Daily 6AM\",\n      \"status\": \"Recurring\",\n      \"recurrence\": \"Daily\",\n      \"startDate\": \"2026-01-01T06:00:00.000Z\",\n      \"lastRun\": \"2026-02-08T06:00:12.000Z\",\n      \"lastStatus\": \"Success\",\n      \"nextRun\": \"2026-02-09T06:00:00.000Z\",\n      \"owner\": \"admin\",\n      \"format\": \"PDF\",\n      \"destination\": \"Default Enterprise Location\"\n    }\n  ],\n  \"totalCount\": 1\n}"
+						},
+						{
+							"name": "Success - No Schedules",
+							"status": "OK",
+							"code": 200,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"schedules\": [],\n  \"totalCount\": 0\n}"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "5. Promotion / LCM (Export Flow)",
+			"description": "Endpoints for the LCMBIAR export workflow: create promotion job → execute → poll → download.\n\n**Run these in order:**\n1. Create Promotion Job\n2. Execute Promotion\n3. Get Promotion Status (poll until Completed)\n4. Download LCMBIAR",
+			"item": [
+				{
+					"name": "Create Promotion Job (Export)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 201', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+									"});",
+									"",
+									"pm.test('Job ID returned', function () {",
+									"    const json = pm.response.json();",
+									"    pm.expect(json.id).to.exist;",
+									"    pm.environment.set('promotionJobId', json.id);",
+									"    console.log('Promotion Job ID saved: ' + json.id);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Accept", "value": "application/json" },
+							{ "key": "Content-Type", "value": "application/json" }
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"name\": \"Export_CI_20260208_120000\",\n  \"description\": \"CI/CD export of /Public Folders\",\n  \"sourceType\": \"folder\",\n  \"sourceId\": \"{{folderId}}\",\n  \"includeSecurityRights\": true,\n  \"includeDependencies\": true,\n  \"exportFormat\": \"lcmbiar\"\n}"
+						},
+						"url": {
+							"raw": "{{baseUrl}}/biprws/promotion/",
+							"host": ["{{baseUrl}}"],
+							"path": ["biprws", "promotion", ""]
+						},
+						"description": "Creates a new promotion export job. The job is created in a pending state - call Execute or Promote to start it.\n\nThe test script auto-saves the `promotionJobId` to the environment."
+					},
+					"response": [
+						{
+							"name": "Success - Job Created",
+							"status": "Created",
+							"code": 201,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" },
+								{ "key": "Location", "value": "/biprws/promotion/PRJ_001" }
+							],
+							"body": "{\n  \"id\": \"PRJ_001\",\n  \"name\": \"Export_CI_20260208_120000\",\n  \"description\": \"CI/CD export of /Public Folders\",\n  \"status\": \"Pending\",\n  \"sourceType\": \"folder\",\n  \"sourceId\": 4512,\n  \"includeSecurityRights\": true,\n  \"includeDependencies\": true,\n  \"exportFormat\": \"lcmbiar\",\n  \"createdBy\": \"Administrator\",\n  \"createdAt\": \"2026-02-08T12:00:00.000Z\"\n}"
+						},
+						{
+							"name": "Error - Invalid Source",
+							"status": "Bad Request",
+							"code": 400,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"error_code\": \"LCM 00015\",\n  \"message\": \"Source folder ID '99999' does not exist or is not accessible.\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Test Promotion (Dry Run)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Accept", "value": "application/json" }
+						],
+						"url": {
+							"raw": "{{baseUrl}}/biprws/promotion/{{promotionJobId}}/test",
+							"host": ["{{baseUrl}}"],
+							"path": ["biprws", "promotion", "{{promotionJobId}}", "test"]
+						},
+						"description": "Runs a dry-run test of the promotion job without actually exporting. Returns a list of objects that would be included and any potential conflicts. Use this to validate before executing."
+					},
+					"response": [
+						{
+							"name": "Success - Test Results",
+							"status": "OK",
+							"code": 200,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"id\": \"PRJ_001\",\n  \"status\": \"TestCompleted\",\n  \"objectCount\": 15,\n  \"objects\": [\n    { \"name\": \"Sales Dashboard\", \"type\": \"Webi\", \"cuid\": \"AX.abc123\", \"action\": \"export\" },\n    { \"name\": \"Finance Universe\", \"type\": \"Universe\", \"cuid\": \"AX.def456\", \"action\": \"export\" },\n    { \"name\": \"Sales Connection\", \"type\": \"Connection\", \"cuid\": \"AX.conn01\", \"action\": \"dependency\" }\n  ],\n  \"warnings\": [],\n  \"conflicts\": []\n}"
+						}
+					]
+				},
+				{
+					"name": "Execute Promotion",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 202', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 202]);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Accept", "value": "application/json" }
+						],
+						"url": {
+							"raw": "{{baseUrl}}/biprws/promotion/{{promotionJobId}}/execute",
+							"host": ["{{baseUrl}}"],
+							"path": ["biprws", "promotion", "{{promotionJobId}}", "execute"]
+						},
+						"description": "Starts execution of the promotion job. The job runs asynchronously - poll the status endpoint until completion.\n\nAlternative endpoint: `POST /biprws/promotion/{id}/promote`"
+					},
+					"response": [
+						{
+							"name": "Success - Execution Started",
+							"status": "Accepted",
+							"code": 202,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"id\": \"PRJ_001\",\n  \"status\": \"Running\",\n  \"message\": \"Promotion job execution started\",\n  \"startedAt\": \"2026-02-08T12:00:30.000Z\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Promote (Alternative Execute)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 202', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 202]);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Accept", "value": "application/json" }
+						],
+						"url": {
+							"raw": "{{baseUrl}}/biprws/promotion/{{promotionJobId}}/promote",
+							"host": ["{{baseUrl}}"],
+							"path": ["biprws", "promotion", "{{promotionJobId}}", "promote"]
+						},
+						"description": "Alternative endpoint to execute the promotion job. Functionally equivalent to `/execute`."
+					},
+					"response": [
+						{
+							"name": "Success - Promotion Started",
+							"status": "Accepted",
+							"code": 202,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"id\": \"PRJ_001\",\n  \"status\": \"Running\",\n  \"message\": \"Promotion started\",\n  \"startedAt\": \"2026-02-08T12:00:30.000Z\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Get Promotion Status (Poll)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Status field present', function () {",
+									"    const json = pm.response.json();",
+									"    const state = json.status || json.state;",
+									"    pm.expect(state).to.be.a('string');",
+									"    console.log('Job status: ' + state);",
+									"    ",
+									"    if (state === 'Completed' || state === 'Success') {",
+									"        console.log('Job completed! Proceed to download LCMBIAR.');",
+									"    } else if (state === 'Running' || state === 'InProgress') {",
+									"        console.log('Still running... send this request again to poll.');",
+									"    }",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Accept", "value": "application/json" }
+						],
+						"url": {
+							"raw": "{{baseUrl}}/biprws/promotion/{{promotionJobId}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["biprws", "promotion", "{{promotionJobId}}"]
+						},
+						"description": "Polls the promotion job status. Keep calling until `status` is `Completed`, `Success`, or `Failed`.\n\n**Possible states**: Pending, Running, InProgress, Completed, Success, Failed, Error, Cancelled\n\n**Recommended poll interval**: 5 seconds"
+					},
+					"response": [
+						{
+							"name": "Running",
+							"status": "OK",
+							"code": 200,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"id\": \"PRJ_001\",\n  \"name\": \"Export_CI_20260208_120000\",\n  \"status\": \"Running\",\n  \"progress\": 45,\n  \"startedAt\": \"2026-02-08T12:00:30.000Z\",\n  \"objectsProcessed\": 7,\n  \"objectsTotal\": 15\n}"
+						},
+						{
+							"name": "Completed",
+							"status": "OK",
+							"code": 200,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"id\": \"PRJ_001\",\n  \"name\": \"Export_CI_20260208_120000\",\n  \"status\": \"Completed\",\n  \"progress\": 100,\n  \"startedAt\": \"2026-02-08T12:00:30.000Z\",\n  \"completedAt\": \"2026-02-08T12:02:15.000Z\",\n  \"objectsProcessed\": 15,\n  \"objectsTotal\": 15,\n  \"lcmbiarAvailable\": true\n}"
+						},
+						{
+							"name": "Failed",
+							"status": "OK",
+							"code": 200,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"id\": \"PRJ_001\",\n  \"name\": \"Export_CI_20260208_120000\",\n  \"status\": \"Failed\",\n  \"startedAt\": \"2026-02-08T12:00:30.000Z\",\n  \"completedAt\": \"2026-02-08T12:01:05.000Z\",\n  \"errorMessage\": \"Access denied to folder '/Public Folders/Restricted'. Insufficient privileges for user 'admin'.\",\n  \"errorCode\": \"LCM 00023\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Get Promotion Results",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Accept", "value": "application/json" }
+						],
+						"url": {
+							"raw": "{{baseUrl}}/biprws/promotion/{{promotionJobId}}/results",
+							"host": ["{{baseUrl}}"],
+							"path": ["biprws", "promotion", "{{promotionJobId}}", "results"]
+						},
+						"description": "Retrieves detailed results after a promotion job completes. Shows each object processed, success/failure status, and any warnings."
+					},
+					"response": [
+						{
+							"name": "Success - Export Results",
+							"status": "OK",
+							"code": 200,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"id\": \"PRJ_001\",\n  \"status\": \"Completed\",\n  \"summary\": {\n    \"totalObjects\": 15,\n    \"succeeded\": 15,\n    \"failed\": 0,\n    \"warnings\": 1\n  },\n  \"objects\": [\n    {\n      \"name\": \"Sales Dashboard\",\n      \"type\": \"Webi\",\n      \"cuid\": \"AX.abc123\",\n      \"status\": \"Success\",\n      \"action\": \"Exported\"\n    },\n    {\n      \"name\": \"Finance Universe\",\n      \"type\": \"Universe\",\n      \"cuid\": \"AX.def456\",\n      \"status\": \"Success\",\n      \"action\": \"Exported\"\n    },\n    {\n      \"name\": \"Sales Connection\",\n      \"type\": \"Connection\",\n      \"cuid\": \"AX.conn01\",\n      \"status\": \"Warning\",\n      \"action\": \"Exported\",\n      \"message\": \"Connection password not included in export\"\n    }\n  ]\n}"
+						}
+					]
+				},
+				{
+					"name": "Download LCMBIAR File",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Content-Type is binary', function () {",
+									"    const ct = pm.response.headers.get('Content-Type');",
+									"    pm.expect(ct).to.include('octet-stream');",
+									"});",
+									"",
+									"pm.test('File has content', function () {",
+									"    pm.expect(pm.response.stream.byteLength).to.be.above(0);",
+									"    console.log('LCMBIAR size: ' + pm.response.stream.byteLength + ' bytes');",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Accept", "value": "application/octet-stream" }
+						],
+						"url": {
+							"raw": "{{baseUrl}}/biprws/promotion/{{promotionJobId}}/lcmbiar",
+							"host": ["{{baseUrl}}"],
+							"path": ["biprws", "promotion", "{{promotionJobId}}", "lcmbiar"]
+						},
+						"description": "Downloads the LCMBIAR archive file from a completed promotion job.\n\n**Tip**: In Postman, click \"Save Response\" → \"Save to a file\" to save the `.lcmbiar` file to disk.\n\nThe response is a binary file (application/octet-stream)."
+					},
+					"response": [
+						{
+							"name": "Success - Binary Download",
+							"status": "OK",
+							"code": 200,
+							"header": [
+								{ "key": "Content-Type", "value": "application/octet-stream" },
+								{ "key": "Content-Disposition", "value": "attachment; filename=\"Export_CI_20260208_120000.lcmbiar\"" },
+								{ "key": "Content-Length", "value": "2458624" }
+							],
+							"body": "(binary LCMBIAR content - save to file)"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "6. Promotion / LCM (Import Flow)",
+			"description": "Endpoints for the LCMBIAR import workflow: upload LCMBIAR → poll → verify results.\n\n**Run these in order:**\n1. Upload LCMBIAR (Import)\n2. Get Promotion Status (poll until Completed)\n3. Get Promotion Results (verify)",
+			"item": [
+				{
+					"name": "Upload LCMBIAR (Import)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200 or 201', function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 201]);",
+									"});",
+									"",
+									"pm.test('Import job ID returned', function () {",
+									"    const json = pm.response.json();",
+									"    pm.expect(json.id).to.exist;",
+									"    pm.environment.set('importJobId', json.id);",
+									"    console.log('Import Job ID saved: ' + json.id);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "POST",
+						"header": [
+							{ "key": "Accept", "value": "application/json" }
+						],
+						"body": {
+							"mode": "formdata",
+							"formdata": [
+								{
+									"key": "file",
+									"type": "file",
+									"src": "",
+									"description": "Select the .lcmbiar file to import"
+								},
+								{
+									"key": "conflictResolution",
+									"value": "overwrite",
+									"type": "text",
+									"description": "Conflict resolution: overwrite, skip, rename, fail"
+								},
+								{
+									"key": "overwriteSecurity",
+									"value": "false",
+									"type": "text",
+									"description": "Whether to overwrite security settings"
+								}
+							]
+						},
+						"url": {
+							"raw": "{{baseUrl}}/biprws/promotion/",
+							"host": ["{{baseUrl}}"],
+							"path": ["biprws", "promotion", ""]
+						},
+						"description": "Uploads an LCMBIAR archive for import/promotion into the target BOBJ environment.\n\n**Steps to use:**\n1. In the Body tab, click \"Select Files\" next to the `file` field\n2. Browse to your `.lcmbiar` file\n3. Set conflict resolution: `overwrite` (update existing), `skip`, `rename`, or `fail`\n4. Send the request\n5. Poll the returned job ID for completion\n\n**Conflict Resolution Options:**\n- `overwrite` – Update existing objects (most common for CI/CD)\n- `skip` – Skip objects that already exist\n- `rename` – Import with a new name if conflict\n- `fail` – Abort if any conflict is found"
+					},
+					"response": [
+						{
+							"name": "Success - Import Started",
+							"status": "Created",
+							"code": 201,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"id\": \"IMP_001\",\n  \"name\": \"Import_20260208_140000\",\n  \"status\": \"Running\",\n  \"type\": \"import\",\n  \"conflictResolution\": \"overwrite\",\n  \"overwriteSecurity\": false,\n  \"fileSize\": 2458624,\n  \"fileName\": \"Export_CI_20260208_120000.lcmbiar\",\n  \"startedAt\": \"2026-02-08T14:00:00.000Z\"\n}"
+						},
+						{
+							"name": "Error - Invalid File",
+							"status": "Bad Request",
+							"code": 400,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"error_code\": \"LCM 00030\",\n  \"message\": \"The uploaded file is not a valid LCMBIAR archive. Expected ZIP format with manifest.\"\n}"
+						}
+					]
+				},
+				{
+					"name": "Get Import Status (Poll)",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"const json = pm.response.json();",
+									"const state = json.status || json.state;",
+									"console.log('Import status: ' + state);"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Accept", "value": "application/json" }
+						],
+						"url": {
+							"raw": "{{baseUrl}}/biprws/promotion/{{importJobId}}",
+							"host": ["{{baseUrl}}"],
+							"path": ["biprws", "promotion", "{{importJobId}}"]
+						},
+						"description": "Polls the import job status. Same endpoint as export status polling.\n\nPoll every 5 seconds until `status` is `Completed` or `Failed`."
+					},
+					"response": [
+						{
+							"name": "Completed",
+							"status": "OK",
+							"code": 200,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"id\": \"IMP_001\",\n  \"status\": \"Completed\",\n  \"progress\": 100,\n  \"startedAt\": \"2026-02-08T14:00:00.000Z\",\n  \"completedAt\": \"2026-02-08T14:03:45.000Z\",\n  \"objectsProcessed\": 15,\n  \"objectsTotal\": 15\n}"
+						}
+					]
+				},
+				{
+					"name": "Get Import Results",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('All objects imported', function () {",
+									"    const json = pm.response.json();",
+									"    pm.expect(json.summary.failed).to.equal(0);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Accept", "value": "application/json" }
+						],
+						"url": {
+							"raw": "{{baseUrl}}/biprws/promotion/{{importJobId}}/results",
+							"host": ["{{baseUrl}}"],
+							"path": ["biprws", "promotion", "{{importJobId}}", "results"]
+						},
+						"description": "Retrieves detailed results after an import completes. Shows per-object status, conflicts resolved, and any errors."
+					},
+					"response": [
+						{
+							"name": "Success - Import Results",
+							"status": "OK",
+							"code": 200,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"id\": \"IMP_001\",\n  \"status\": \"Completed\",\n  \"summary\": {\n    \"totalObjects\": 15,\n    \"succeeded\": 14,\n    \"failed\": 0,\n    \"skipped\": 1,\n    \"warnings\": 2\n  },\n  \"objects\": [\n    {\n      \"name\": \"Sales Dashboard\",\n      \"type\": \"Webi\",\n      \"cuid\": \"AX.abc123\",\n      \"status\": \"Success\",\n      \"action\": \"Updated\",\n      \"targetId\": 7501\n    },\n    {\n      \"name\": \"Finance Universe\",\n      \"type\": \"Universe\",\n      \"cuid\": \"AX.def456\",\n      \"status\": \"Success\",\n      \"action\": \"Created\",\n      \"targetId\": 7502\n    },\n    {\n      \"name\": \"Old Report\",\n      \"type\": \"Webi\",\n      \"cuid\": \"AX.old001\",\n      \"status\": \"Skipped\",\n      \"action\": \"Skipped\",\n      \"message\": \"Object already exists with identical content\"\n    },\n    {\n      \"name\": \"Sales Connection\",\n      \"type\": \"Connection\",\n      \"cuid\": \"AX.conn01\",\n      \"status\": \"Warning\",\n      \"action\": \"Updated\",\n      \"targetId\": 7503,\n      \"message\": \"Connection password was not imported - manual configuration required\"\n    }\n  ]\n}"
+						}
+					]
+				}
+			]
+		},
+		{
+			"name": "7. Promotion Health Check",
+			"description": "Quick health check for the Promotion Management API.",
+			"item": [
+				{
+					"name": "Promotion API Health",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"type": "text/javascript",
+								"exec": [
+									"pm.test('Status code is 200', function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								]
+							}
+						}
+					],
+					"request": {
+						"method": "GET",
+						"header": [
+							{ "key": "Accept", "value": "application/json" }
+						],
+						"url": {
+							"raw": "{{baseUrl}}/biprws/promotion/",
+							"host": ["{{baseUrl}}"],
+							"path": ["biprws", "promotion", ""]
+						},
+						"description": "Checks that the Promotion Management API is accessible and responding. Used as part of the 6-step health check in CI/CD pipelines."
+					},
+					"response": [
+						{
+							"name": "Success - Promotion API Available",
+							"status": "OK",
+							"code": 200,
+							"header": [
+								{ "key": "Content-Type", "value": "application/json" }
+							],
+							"body": "{\n  \"promotion\": {\n    \"description\": \"Promotion Management REST API\",\n    \"version\": \"1.0\",\n    \"capabilities\": [\"export\", \"import\", \"test\", \"rollback\"]\n  }\n}"
+						}
+					]
+				}
+			]
+		}
+	]
+}
