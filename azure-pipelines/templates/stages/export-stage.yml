@@ -1,5 +1,5 @@
 # Export Stage Template for BOBJ Content
-# Exports BusinessObjects content to LCMBIAR archive
+# Exports BusinessObjects content to LCMBIAR archive using LCMCLI
 
 parameters:
   - name: sourceEnvironment
@@ -37,14 +37,6 @@ stages:
           - checkout: self
             clean: true
             
-          - task: AzureKeyVault@2
-            displayName: 'Fetch BOBJ Credentials'
-            inputs:
-              azureSubscription: $(serviceConnectionName)
-              KeyVaultName: $(keyVaultName)
-              SecretsFilter: 'bobj-username,bobj-password'
-              RunAsPreJob: true
-              
           - task: PowerShell@2
             displayName: 'Test BOBJ Connection'
             inputs:
@@ -65,14 +57,14 @@ stages:
               targetType: 'filePath'
               filePath: '$(powershellScriptsPath)/Export-BOBJContent.ps1'
               arguments: >
-                -ServerUrl "$(bobjServerUrl)"
                 -CmsServer "$(bobjCmsServer)"
+                -CmsPort "$(bobjCmsPort)"
                 -Username "$(bobj-username)"
                 -Password "$(bobj-password)"
+                -AuthType "$(bobjAuthType)"
                 -ExportFolder "${{ parameters.exportFolder }}"
                 -OutputPath "$(artifactPath)"
                 -IncludeSecurityRights:$${{ parameters.includeSecurityRights }}
-                -IncludeDependencies:$${{ parameters.includeDependencies }}
                 -VerboseLogging:$(verboseLogging)
               pwsh: true
             env:

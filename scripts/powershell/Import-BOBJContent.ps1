@@ -1,16 +1,22 @@
 <#
 .SYNOPSIS
-    Imports LCMBIAR content to SAP BusinessObjects system.
+    Imports LCMBIAR content to SAP BusinessObjects system using LCMCLI.
 
 .DESCRIPTION
-    This script connects to a SAP BusinessObjects system and imports content
-    from an LCMBIAR archive file.
-
-.PARAMETER ServerUrl
-    The URL of the BOBJ server
+    This script uses the SAP LCMCLI command-line tool to import content
+    from an LCMBIAR archive file into a BOBJ system.
+    
+    LCMCLI uses a .properties file for configuration. This script generates
+    the properties file dynamically and invokes lcm_cli.bat.
+    
+    NOTE: In SAP BI 2025, the /biprws/lcm/ REST endpoints do NOT exist.
+    LCMCLI is the supported tool for LCM operations.
 
 .PARAMETER CmsServer
     The CMS server hostname
+
+.PARAMETER CmsPort
+    The CMS port (default: 6400)
 
 .PARAMETER Username
     Username for BOBJ authentication
@@ -18,14 +24,17 @@
 .PARAMETER Password
     Password for BOBJ authentication
 
+.PARAMETER AuthType
+    Authentication type (secEnterprise, secLDAP, secWinAD, secSAPR3)
+
 .PARAMETER LcmbiarPath
     Path to the LCMBIAR file or directory containing LCMBIAR files
 
-.PARAMETER ConflictResolution
-    How to handle conflicts (UpdateExisting, SkipExisting, RenameNew, Fail)
+.PARAMETER LcmbiarPassword
+    Optional password to decrypt encrypted LCMBIAR files
 
-.PARAMETER OverwriteSecurity
-    Overwrite security settings during import
+.PARAMETER LcmcliPath
+    Path to the lcm_cli.bat tool on the BOBJ server
 
 .PARAMETER VerboseLogging
     Enable verbose logging
@@ -33,9 +42,6 @@
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$ServerUrl,
-    
     [Parameter(Mandatory = $true)]
     [string]$CmsServer,
     
@@ -56,14 +62,23 @@ param(
     [string]$LcmbiarPath,
     
     [Parameter(Mandatory = $false)]
-    [ValidateSet('UpdateExisting', 'SkipExisting', 'RenameNew', 'Fail')]
-    [string]$ConflictResolution = 'UpdateExisting',
+    [string]$LcmbiarPassword,
     
     [Parameter(Mandatory = $false)]
-    [switch]$OverwriteSecurity = $false,
+    [string]$LcmcliPath = 'C:\Program Files (x86)\SAP BusinessObjects\SAP BusinessObjects Enterprise XI 4.0\win64_x64\scripts\lcm\lcm_cli.bat',
     
     [Parameter(Mandatory = $false)]
-    [switch]$VerboseLogging = $false
+    [switch]$VerboseLogging = $false,
+
+    # Legacy parameters - kept for backward compatibility with existing pipelines
+    [Parameter(Mandatory = $false)]
+    [string]$ServerUrl,
+    
+    [Parameter(Mandatory = $false)]
+    [string]$ConflictResolution,
+    
+    [Parameter(Mandatory = $false)]
+    [switch]$OverwriteSecurity = $false
 )
 
 $ErrorActionPreference = 'Stop'
@@ -80,140 +95,173 @@ function Write-Log {
     }
 }
 
-function Get-BOBJSession {
-    param([string]$ServerUrl, [string]$Username, [string]$Password, [string]$AuthType)
+function Test-LcmcliExists {
+    param([string]$Path)
     
-    Write-Log "Authenticating to BOBJ server: $ServerUrl"
-    
-    $loginUrl = "$ServerUrl/biprws/logon/long"
-    $loginBody = @{
-        userName = $Username
-        password = $Password
-        auth = $AuthType
-    } | ConvertTo-Json
-    
-    try {
-        $response = Invoke-RestMethod -Uri $loginUrl -Method Post -Body $loginBody -ContentType 'application/json'
-        $logonToken = $response.logonToken
-        
-        if (-not $logonToken) { throw "Failed to obtain logon token" }
-        
-        Write-Log "Successfully authenticated"
-        return $logonToken
+    if (-not (Test-Path $Path)) {
+        Write-Log "LCMCLI not found at: $Path" -Level ERROR
+        Write-Log "Ensure SAP BI Client Tools are installed, or set -LcmcliPath to the correct location." -Level ERROR
+        throw "LCMCLI tool not found at: $Path"
     }
-    catch {
-        Write-Log "Authentication failed: $_" -Level ERROR
-        throw
+    
+    Write-Log "LCMCLI found at: $Path" -Level DEBUG
+}
+
+function New-ImportPropertiesFile {
+    param(
+        [string]$CmsServer,
+        [int]$CmsPort,
+        [string]$Username,
+        [string]$Password,
+        [string]$AuthType,
+        [string]$LcmbiarFilePath,
+        [string]$LcmbiarPassword,
+        [string]$OutputDir
+    )
+    
+    $propertiesPath = Join-Path $OutputDir "lcmcli_import_$(Get-Date -Format 'HHmmss').properties"
+    
+    # Build properties file content
+    $properties = @(
+        "# LCMCLI Import Properties (auto-generated)"
+        "# Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+        ""
+        "action=promote"
+        ""
+        "# Target CMS Connection"
+        "Destination_CMS=${CmsServer}:${CmsPort}"
+        "Destination_userName=${Username}"
+        "Destination_password=${Password}"
+        "Destination_authentication=${AuthType}"
+        ""
+        "# Source LCMBIAR file"
+        "importLocation=$($LcmbiarFilePath -replace '\\', '/')"
+    )
+    
+    if ($LcmbiarPassword) {
+        $properties += ""
+        $properties += "# LCMBIAR decryption"
+        $properties += "lcmbiarpassword=${LcmbiarPassword}"
     }
+    
+    # Enable logging for verbose mode
+    $properties += ""
+    $properties += "# Logging"
+    $properties += "log=true"
+    
+    $properties | Out-File -FilePath $propertiesPath -Encoding UTF8
+    
+    Write-Log "Properties file created: $propertiesPath" -Level DEBUG
+    
+    return $propertiesPath
 }
 
 function Import-FromLCMBIAR {
     param(
-        [string]$ServerUrl,
-        [string]$LogonToken,
+        [string]$CmsServer,
+        [int]$CmsPort,
+        [string]$Username,
+        [string]$Password,
+        [string]$AuthType,
         [string]$LcmbiarFile,
-        [string]$ConflictResolution,
-        [bool]$OverwriteSecurity
+        [string]$LcmbiarPassword,
+        [string]$LcmcliPath
     )
     
-    Write-Log "Starting LCMBIAR import: $LcmbiarFile"
+    Write-Log "Starting LCMBIAR import: $LcmbiarFile" -Level INFO
     
-    $headers = @{
-        'X-SAP-LogonToken' = $LogonToken
-        'Accept' = 'application/json'
-    }
+    $logDir = Split-Path $LcmbiarFile -Parent
+    $logBaseName = [System.IO.Path]::GetFileNameWithoutExtension($LcmbiarFile)
     
-    # Map conflict resolution to API values
-    $conflictMap = @{
-        'UpdateExisting' = 'overwrite'
-        'SkipExisting' = 'skip'
-        'RenameNew' = 'rename'
-        'Fail' = 'fail'
-    }
+    # Create properties file
+    $propertiesFile = New-ImportPropertiesFile `
+        -CmsServer $CmsServer `
+        -CmsPort $CmsPort `
+        -Username $Username `
+        -Password $Password `
+        -AuthType $AuthType `
+        -LcmbiarFilePath $LcmbiarFile `
+        -LcmbiarPassword $LcmbiarPassword `
+        -OutputDir $logDir
+    
+    # Log the properties (mask password)
+    $maskedContent = (Get-Content $propertiesFile -Raw) -replace "Destination_password=.*", "Destination_password=********"
+    Write-Log "Properties file content:" -Level DEBUG
+    $maskedContent -split "`n" | ForEach-Object { Write-Log "  $_" -Level DEBUG }
     
     try {
-        # Upload LCMBIAR file
-        Write-Log "Uploading LCMBIAR file..." -Level DEBUG
+        $stdoutLog = Join-Path $logDir "${logBaseName}_import_stdout.log"
+        $stderrLog = Join-Path $logDir "${logBaseName}_import_stderr.log"
         
-        $uploadUrl = "$ServerUrl/biprws/lcm/imports"
-        $fileBytes = [System.IO.File]::ReadAllBytes($LcmbiarFile)
-        $fileName = [System.IO.Path]::GetFileName($LcmbiarFile)
+        Write-Log "Executing LCMCLI import..." -Level INFO
         
-        $boundary = [System.Guid]::NewGuid().ToString()
-        $headers['Content-Type'] = "multipart/form-data; boundary=$boundary"
+        # Execute LCMCLI with properties file
+        $process = Start-Process -FilePath $LcmcliPath `
+            -ArgumentList "-lcmproperty `"$propertiesFile`"" `
+            -Wait `
+            -PassThru `
+            -NoNewWindow `
+            -RedirectStandardOutput $stdoutLog `
+            -RedirectStandardError $stderrLog
         
-        # Build multipart form data
-        $bodyLines = @(
-            "--$boundary",
-            "Content-Disposition: form-data; name=`"file`"; filename=`"$fileName`"",
-            "Content-Type: application/octet-stream",
-            "",
-            [System.Text.Encoding]::UTF8.GetString($fileBytes),
-            "--$boundary",
-            "Content-Disposition: form-data; name=`"conflictResolution`"",
-            "",
-            $conflictMap[$ConflictResolution],
-            "--$boundary",
-            "Content-Disposition: form-data; name=`"overwriteSecurity`"",
-            "",
-            $OverwriteSecurity.ToString().ToLower(),
-            "--$boundary--"
-        )
+        # Read output logs
+        $stdout = ""
+        $stderr = ""
         
-        $uploadResponse = Invoke-RestMethod -Uri $uploadUrl -Method Post -Headers $headers -Body ($bodyLines -join "`r`n")
-        
-        $importJobId = $uploadResponse.id
-        Write-Log "Import job created with ID: $importJobId"
-        
-        # Wait for import completion
-        $maxAttempts = 120
-        $attempts = 0
-        $completed = $false
-        
-        while (-not $completed -and $attempts -lt $maxAttempts) {
-            Start-Sleep -Seconds 5
-            $attempts++
-            
-            $statusUrl = "$ServerUrl/biprws/lcm/imports/$importJobId/status"
-            $statusHeaders = @{
-                'X-SAP-LogonToken' = $LogonToken
-                'Accept' = 'application/json'
-            }
-            $status = Invoke-RestMethod -Uri $statusUrl -Method Get -Headers $statusHeaders
-            
-            Write-Log "Import status: $($status.state) (attempt $attempts/$maxAttempts)" -Level DEBUG
-            
-            if ($status.state -eq 'Completed') {
-                $completed = $true
-            }
-            elseif ($status.state -eq 'Failed') {
-                throw "Import job failed: $($status.errorMessage)"
+        if (Test-Path $stdoutLog) {
+            $stdout = Get-Content $stdoutLog -Raw
+            if ($stdout) {
+                Write-Log "LCMCLI Output:" -Level DEBUG
+                $stdout -split "`n" | ForEach-Object { Write-Log "  $_" -Level DEBUG }
             }
         }
         
-        if (-not $completed) {
-            throw "Import job timed out"
+        if (Test-Path $stderrLog) {
+            $stderr = Get-Content $stderrLog -Raw
+            if ($stderr) {
+                Write-Log "LCMCLI Errors:" -Level WARN
+                $stderr -split "`n" | ForEach-Object { Write-Log "  $_" -Level WARN }
+            }
         }
         
-        # Get import results
-        $resultsUrl = "$ServerUrl/biprws/lcm/imports/$importJobId/results"
-        $results = Invoke-RestMethod -Uri $resultsUrl -Method Get -Headers $statusHeaders
+        # Parse counts from LCMCLI output (best-effort)
+        $importedCount = 0
+        $skippedCount = 0
+        $failedCount = 0
         
-        Write-Log "Import completed successfully"
-        Write-Log "Objects imported: $($results.importedCount)" -Level INFO
-        Write-Log "Objects skipped: $($results.skippedCount)" -Level INFO
-        Write-Log "Objects failed: $($results.failedCount)" -Level INFO
+        if ($stdout) {
+            if ($stdout -match '(?i)imported[:\s]+(\d+)') { $importedCount = [int]$Matches[1] }
+            if ($stdout -match '(?i)skipped[:\s]+(\d+)')  { $skippedCount = [int]$Matches[1] }
+            if ($stdout -match '(?i)failed[:\s]+(\d+)')   { $failedCount = [int]$Matches[1] }
+        }
+        
+        # Check exit code
+        if ($process.ExitCode -ne 0) {
+            $errorMsg = if ($stderr) { $stderr } else { "LCMCLI exited with code $($process.ExitCode)" }
+            throw "LCMCLI import failed (exit code $($process.ExitCode)): $errorMsg"
+        }
+        
+        Write-Log "Import completed successfully" -Level INFO
+        Write-Log "Objects imported: $importedCount" -Level INFO
+        Write-Log "Objects skipped: $skippedCount" -Level INFO
+        Write-Log "Objects failed: $failedCount" -Level INFO
+        
+        # Clean up temp files
+        Remove-Item $propertiesFile -Force -ErrorAction SilentlyContinue
+        Remove-Item $stdoutLog -Force -ErrorAction SilentlyContinue
+        Remove-Item $stderrLog -Force -ErrorAction SilentlyContinue
         
         return @{
             Success = $true
-            JobId = $importJobId
-            ImportedCount = $results.importedCount
-            SkippedCount = $results.skippedCount
-            FailedCount = $results.failedCount
+            ImportedCount = $importedCount
+            SkippedCount = $skippedCount
+            FailedCount = $failedCount
         }
     }
     catch {
         Write-Log "Import failed: $_" -Level ERROR
+        # Clean up properties file (contains password)
+        Remove-Item $propertiesFile -Force -ErrorAction SilentlyContinue
         return @{
             Success = $false
             Error = $_.Exception.Message
@@ -221,34 +269,27 @@ function Import-FromLCMBIAR {
     }
 }
 
-function Close-BOBJSession {
-    param([string]$ServerUrl, [string]$LogonToken)
-    
-    $logoffUrl = "$ServerUrl/biprws/logoff"
-    $headers = @{ 'X-SAP-LogonToken' = $LogonToken }
-    
-    try {
-        Invoke-RestMethod -Uri $logoffUrl -Method Post -Headers $headers | Out-Null
-        Write-Log "Session closed" -Level DEBUG
-    }
-    catch {
-        Write-Log "Failed to close session: $_" -Level WARN
-    }
-}
-
 # Main execution
 try {
-    Write-Log "=== BOBJ Content Import Started ==="
-    Write-Log "Server URL: $ServerUrl"
+    Write-Log "=== BOBJ Content Import Started (LCMCLI) ==="
+    Write-Log "CMS Server: ${CmsServer}:${CmsPort}"
     Write-Log "LCMBIAR Path: $LcmbiarPath"
-    Write-Log "Conflict Resolution: $ConflictResolution"
-    Write-Log "Overwrite Security: $OverwriteSecurity"
+    Write-Log "LCMCLI Path: $LcmcliPath"
+    
+    if ($ServerUrl) {
+        Write-Log "NOTE: -ServerUrl parameter is deprecated. LCMCLI connects directly via CMS. Ignoring ServerUrl." -Level WARN
+    }
+    if ($ConflictResolution) {
+        Write-Log "NOTE: -ConflictResolution parameter is not used by LCMCLI promote action. LCMCLI manages conflicts internally." -Level WARN
+    }
+    
+    # Verify LCMCLI tool exists
+    Test-LcmcliExists -Path $LcmcliPath
     
     # Find LCMBIAR files
     if (Test-Path $LcmbiarPath -PathType Container) {
         $lcmbiarFiles = Get-ChildItem -Path $LcmbiarPath -Filter "*.lcmbiar" -Recurse
         if ($lcmbiarFiles.Count -eq 0) {
-            # Also check for files without extension
             $lcmbiarFiles = Get-ChildItem -Path $LcmbiarPath -Recurse -File | Where-Object { $_.Length -gt 0 }
         }
     }
@@ -263,9 +304,6 @@ try {
     
     Write-Log "Found $($lcmbiarFiles.Count) LCMBIAR file(s)"
     
-    # Authenticate
-    $logonToken = Get-BOBJSession -ServerUrl $ServerUrl -Username $Username -Password $Password -AuthType $AuthType
-    
     $totalImported = 0
     $totalSkipped = 0
     $totalFailed = 0
@@ -275,11 +313,14 @@ try {
         Write-Log "Processing: $($file.FullName)"
         
         $result = Import-FromLCMBIAR `
-            -ServerUrl $ServerUrl `
-            -LogonToken $logonToken `
+            -CmsServer $CmsServer `
+            -CmsPort $CmsPort `
+            -Username $Username `
+            -Password $Password `
+            -AuthType $AuthType `
             -LcmbiarFile $file.FullName `
-            -ConflictResolution $ConflictResolution `
-            -OverwriteSecurity $OverwriteSecurity
+            -LcmbiarPassword $LcmbiarPassword `
+            -LcmcliPath $LcmcliPath
         
         if ($result.Success) {
             $totalImported += $result.ImportedCount
@@ -291,9 +332,6 @@ try {
             Write-Log "Failed to import $($file.Name): $($result.Error)" -Level ERROR
         }
     }
-    
-    # Close session
-    Close-BOBJSession -ServerUrl $ServerUrl -LogonToken $logonToken
     
     Write-Log "=== Import Summary ==="
     Write-Log "Total imported: $totalImported"

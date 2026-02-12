@@ -14,8 +14,10 @@ variables:
   # Environment Name
   environmentName: ${{ parameters.environment }}
   
-  # Key Vault Reference (for secrets)
-  keyVaultName: 'kv-bobj-${{ parameters.environment }}'
+  # Variable Group for credentials (stores bobj-username and bobj-password)
+  # Create these groups in Azure DevOps: Pipelines > Library > Variable Groups
+  # Each group should contain: bobj-username, bobj-password (mark password as secret)
+  - group: bobj-creds-${{ parameters.environment }}
   
   # BOBJ Server Configuration
   ${{ if eq(parameters.environment, 'dev') }}:

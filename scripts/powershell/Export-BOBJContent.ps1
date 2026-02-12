@@ -1,13 +1,16 @@
 <#
 .SYNOPSIS
-    Exports SAP BusinessObjects content to LCMBIAR archive.
+    Exports SAP BusinessObjects content to LCMBIAR archive using LCMCLI.
 
 .DESCRIPTION
-    This script connects to a SAP BusinessObjects system and exports content
+    This script uses the SAP LCMCLI command-line tool to export content
     (reports, universes, connections, folders) to an LCMBIAR file for transport.
-
-.PARAMETER ServerUrl
-    The URL of the BOBJ server (e.g., http://bobj-server:8080)
+    
+    LCMCLI uses a .properties file for configuration. This script generates
+    the properties file dynamically and invokes lcm_cli.bat.
+    
+    NOTE: In SAP BI 2025, the /biprws/lcm/ REST endpoints do NOT exist.
+    LCMCLI is the supported tool for LCM operations.
 
 .PARAMETER CmsServer
     The CMS server hostname or IP address
@@ -30,11 +33,17 @@
 .PARAMETER OutputPath
     Path where the LCMBIAR file will be saved
 
+.PARAMETER ExportQuery
+    Optional CMS query string. If not provided, defaults to exporting all objects under ExportFolder.
+
 .PARAMETER IncludeSecurityRights
     Include security rights in the export
 
-.PARAMETER IncludeDependencies
-    Include dependent objects in the export
+.PARAMETER LcmcliPath
+    Path to the lcm_cli.bat tool on the BOBJ server
+
+.PARAMETER LcmbiarPassword
+    Optional password to encrypt the LCMBIAR file
 
 .PARAMETER BackupMode
     Run in backup mode (exports all content for recovery purposes)
@@ -43,14 +52,11 @@
     Enable verbose logging
 
 .EXAMPLE
-    .\Export-BOBJContent.ps1 -ServerUrl "http://bobj:8080" -CmsServer "bobj-cms" -Username "admin" -Password "pass" -ExportFolder "/Public Folders" -OutputPath "./export"
+    .\Export-BOBJContent.ps1 -CmsServer "bobj-cms" -Username "admin" -Password "pass" -ExportFolder "/Public Folders" -OutputPath "./export"
 #>
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$ServerUrl,
-    
     [Parameter(Mandatory = $true)]
     [string]$CmsServer,
     
@@ -74,22 +80,31 @@ param(
     [string]$OutputPath,
     
     [Parameter(Mandatory = $false)]
+    [string]$ExportQuery,
+    
+    [Parameter(Mandatory = $false)]
     [switch]$IncludeSecurityRights = $true,
     
     [Parameter(Mandatory = $false)]
-    [switch]$IncludeDependencies = $true,
+    [string]$LcmcliPath = 'C:\Program Files (x86)\SAP BusinessObjects\SAP BusinessObjects Enterprise XI 4.0\win64_x64\scripts\lcm\lcm_cli.bat',
+    
+    [Parameter(Mandatory = $false)]
+    [string]$LcmbiarPassword,
     
     [Parameter(Mandatory = $false)]
     [switch]$BackupMode = $false,
     
     [Parameter(Mandatory = $false)]
-    [switch]$VerboseLogging = $false
+    [switch]$VerboseLogging = $false,
+
+    # Legacy parameter - kept for backward compatibility with existing pipelines
+    [Parameter(Mandatory = $false)]
+    [string]$ServerUrl
 )
 
 # Set error action preference
 $ErrorActionPreference = 'Stop'
 
-# Import logging functions
 function Write-Log {
     param(
         [string]$Message,
@@ -108,154 +123,188 @@ function Write-Log {
     }
 }
 
-function Get-BOBJSession {
-    param(
-        [string]$ServerUrl,
-        [string]$Username,
-        [string]$Password,
-        [string]$AuthType
-    )
+function Test-LcmcliExists {
+    param([string]$Path)
     
-    Write-Log "Authenticating to BOBJ server: $ServerUrl" -Level INFO
-    
-    $loginUrl = "$ServerUrl/biprws/logon/long"
-    
-    $loginBody = @{
-        userName = $Username
-        password = $Password
-        auth = $AuthType
-    } | ConvertTo-Json
-    
-    try {
-        $response = Invoke-RestMethod -Uri $loginUrl -Method Post -Body $loginBody -ContentType 'application/json'
-        $logonToken = $response.logonToken
-        
-        if (-not $logonToken) {
-            throw "Failed to obtain logon token"
-        }
-        
-        Write-Log "Successfully authenticated to BOBJ" -Level INFO
-        return $logonToken
+    if (-not (Test-Path $Path)) {
+        Write-Log "LCMCLI not found at: $Path" -Level ERROR
+        Write-Log "Ensure SAP BI Client Tools are installed, or set -LcmcliPath to the correct location." -Level ERROR
+        throw "LCMCLI tool not found at: $Path"
     }
-    catch {
-        Write-Log "Authentication failed: $_" -Level ERROR
-        throw
-    }
+    
+    Write-Log "LCMCLI found at: $Path" -Level DEBUG
 }
 
-function Get-FolderContents {
+function New-ExportPropertiesFile {
     param(
-        [string]$ServerUrl,
-        [string]$LogonToken,
-        [string]$FolderPath
+        [string]$CmsServer,
+        [int]$CmsPort,
+        [string]$Username,
+        [string]$Password,
+        [string]$AuthType,
+        [string]$ExportFolder,
+        [string]$ExportQuery,
+        [string]$LcmbiarFilePath,
+        [bool]$IncludeSecurity,
+        [string]$LcmbiarPassword,
+        [string]$OutputDir
     )
     
-    Write-Log "Fetching contents of folder: $FolderPath" -Level DEBUG
+    $propertiesPath = Join-Path $OutputDir "lcmcli_export.properties"
     
-    $headers = @{
-        'X-SAP-LogonToken' = $LogonToken
-        'Accept' = 'application/json'
+    # Build the CMS query
+    if (-not $ExportQuery) {
+        # Default: export everything under the specified folder
+        $ExportQuery = "select * from ci_Infoobjects where si_path like '${ExportFolder}%'"
     }
     
-    # Get folder ID from path
-    $encodedPath = [System.Web.HttpUtility]::UrlEncode($FolderPath)
-    $folderUrl = "$ServerUrl/biprws/infostore/folder?path=$encodedPath"
+    # Build properties file content
+    $properties = @(
+        "# LCMCLI Export Properties (auto-generated)"
+        "# Generated: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+        ""
+        "action=export"
+        ""
+        "# CMS Connection"
+        "LCM_CMS=${CmsServer}:${CmsPort}"
+        "LCM_userName=${Username}"
+        "LCM_password=${Password}"
+        "LCM_authentication=${AuthType}"
+        ""
+        "# Export output"
+        "exportLocation=$($LcmbiarFilePath -replace '\\', '/')"
+        ""
+        "# Export query"
+        "exportQuery1=${ExportQuery}"
+        "maxQueries=1"
+        ""
+        "# Security"
+        "exportSecurity=$($IncludeSecurity.ToString().ToLower())"
+    )
     
-    try {
-        $folderInfo = Invoke-RestMethod -Uri $folderUrl -Method Get -Headers $headers
-        return $folderInfo
+    if ($LcmbiarPassword) {
+        $properties += ""
+        $properties += "# LCMBIAR encryption"
+        $properties += "lcmbiarpassword=${LcmbiarPassword}"
     }
-    catch {
-        Write-Log "Failed to get folder contents: $_" -Level WARN
-        return $null
-    }
+    
+    $properties | Out-File -FilePath $propertiesPath -Encoding UTF8
+    
+    Write-Log "Properties file created: $propertiesPath" -Level DEBUG
+    
+    return $propertiesPath
 }
 
 function Export-ToLCMBIAR {
     param(
-        [string]$ServerUrl,
-        [string]$LogonToken,
+        [string]$CmsServer,
+        [int]$CmsPort,
+        [string]$Username,
+        [string]$Password,
+        [string]$AuthType,
         [string]$FolderPath,
+        [string]$ExportQuery,
         [string]$OutputPath,
         [bool]$IncludeSecurity,
-        [bool]$IncludeDeps
+        [string]$LcmbiarPassword,
+        [string]$LcmcliPath
     )
     
     Write-Log "Starting LCMBIAR export from: $FolderPath" -Level INFO
     
-    $headers = @{
-        'X-SAP-LogonToken' = $LogonToken
-        'Accept' = 'application/json'
-        'Content-Type' = 'application/json'
+    # Ensure output directory exists
+    if (-not (Test-Path $OutputPath)) {
+        New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
+        Write-Log "Created output directory: $OutputPath" -Level DEBUG
     }
     
-    # Create promotion job
-    $promotionJob = @{
-        name = "Export_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
-        sourcePath = $FolderPath
-        includeSecurityRights = $IncludeSecurity
-        includeDependencies = $IncludeDeps
-        exportType = "LCMBIAR"
-    }
+    # Generate output filename
+    $timestamp = Get-Date -Format 'yyyyMMdd_HHmmss'
+    $lcmbiarFile = Join-Path $OutputPath "export_$timestamp.lcmbiar"
     
-    $promotionUrl = "$ServerUrl/biprws/lcm/promotions"
+    # Create properties file
+    $propertiesFile = New-ExportPropertiesFile `
+        -CmsServer $CmsServer `
+        -CmsPort $CmsPort `
+        -Username $Username `
+        -Password $Password `
+        -AuthType $AuthType `
+        -ExportFolder $FolderPath `
+        -ExportQuery $ExportQuery `
+        -LcmbiarFilePath $lcmbiarFile `
+        -IncludeSecurity $IncludeSecurity `
+        -LcmbiarPassword $LcmbiarPassword `
+        -OutputDir $OutputPath
+    
+    # Log the properties (mask password)
+    $maskedContent = (Get-Content $propertiesFile -Raw) -replace "LCM_password=.*", "LCM_password=********"
+    Write-Log "Properties file content:" -Level DEBUG
+    $maskedContent -split "`n" | ForEach-Object { Write-Log "  $_" -Level DEBUG }
     
     try {
-        Write-Log "Creating promotion job..." -Level DEBUG
-        $jobResponse = Invoke-RestMethod -Uri $promotionUrl -Method Post -Headers $headers -Body ($promotionJob | ConvertTo-Json)
+        Write-Log "Executing LCMCLI export..." -Level INFO
         
-        $jobId = $jobResponse.id
-        Write-Log "Promotion job created with ID: $jobId" -Level INFO
+        $stdoutLog = Join-Path $OutputPath "lcmcli_stdout.log"
+        $stderrLog = Join-Path $OutputPath "lcmcli_stderr.log"
         
-        # Wait for job completion
-        $maxAttempts = 60
-        $attempts = 0
-        $completed = $false
+        # Execute LCMCLI with properties file
+        $process = Start-Process -FilePath $LcmcliPath `
+            -ArgumentList "-lcmproperty `"$propertiesFile`"" `
+            -Wait `
+            -PassThru `
+            -NoNewWindow `
+            -RedirectStandardOutput $stdoutLog `
+            -RedirectStandardError $stderrLog
         
-        while (-not $completed -and $attempts -lt $maxAttempts) {
-            Start-Sleep -Seconds 5
-            $attempts++
-            
-            $statusUrl = "$ServerUrl/biprws/lcm/promotions/$jobId/status"
-            $status = Invoke-RestMethod -Uri $statusUrl -Method Get -Headers $headers
-            
-            Write-Log "Job status: $($status.state) (attempt $attempts/$maxAttempts)" -Level DEBUG
-            
-            if ($status.state -eq 'Completed') {
-                $completed = $true
-            }
-            elseif ($status.state -eq 'Failed') {
-                throw "Promotion job failed: $($status.errorMessage)"
+        # Read output logs
+        $stdout = ""
+        $stderr = ""
+        
+        if (Test-Path $stdoutLog) {
+            $stdout = Get-Content $stdoutLog -Raw
+            if ($stdout) {
+                Write-Log "LCMCLI Output:" -Level DEBUG
+                $stdout -split "`n" | ForEach-Object { Write-Log "  $_" -Level DEBUG }
             }
         }
         
-        if (-not $completed) {
-            throw "Promotion job timed out after $maxAttempts attempts"
+        if (Test-Path $stderrLog) {
+            $stderr = Get-Content $stderrLog -Raw
+            if ($stderr) {
+                Write-Log "LCMCLI Errors:" -Level WARN
+                $stderr -split "`n" | ForEach-Object { Write-Log "  $_" -Level WARN }
+            }
         }
         
-        # Download LCMBIAR file
-        Write-Log "Downloading LCMBIAR file..." -Level INFO
-        
-        $downloadUrl = "$ServerUrl/biprws/lcm/promotions/$jobId/download"
-        $lcmbiarFile = Join-Path $OutputPath "export_$(Get-Date -Format 'yyyyMMdd_HHmmss').lcmbiar"
-        
-        # Ensure output directory exists
-        if (-not (Test-Path $OutputPath)) {
-            New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
+        # Check exit code
+        if ($process.ExitCode -ne 0) {
+            $errorMsg = if ($stderr) { $stderr } else { "LCMCLI exited with code $($process.ExitCode)" }
+            throw "LCMCLI export failed (exit code $($process.ExitCode)): $errorMsg"
         }
         
-        Invoke-WebRequest -Uri $downloadUrl -Method Get -Headers $headers -OutFile $lcmbiarFile
+        # Verify LCMBIAR file was created
+        if (-not (Test-Path $lcmbiarFile)) {
+            throw "LCMCLI completed but LCMBIAR file was not found at: $lcmbiarFile"
+        }
         
-        Write-Log "LCMBIAR file saved to: $lcmbiarFile" -Level INFO
+        $fileSize = (Get-Item $lcmbiarFile).Length
+        Write-Log "LCMBIAR file created: $lcmbiarFile ($([math]::Round($fileSize / 1MB, 2)) MB)" -Level INFO
+        
+        # Clean up temp files
+        Remove-Item $propertiesFile -Force -ErrorAction SilentlyContinue
+        Remove-Item $stdoutLog -Force -ErrorAction SilentlyContinue
+        Remove-Item $stderrLog -Force -ErrorAction SilentlyContinue
         
         return @{
             Success = $true
             FilePath = $lcmbiarFile
-            JobId = $jobId
+            FileSize = $fileSize
         }
     }
     catch {
         Write-Log "Export failed: $_" -Level ERROR
+        # Clean up properties file (contains password)
+        Remove-Item $propertiesFile -Force -ErrorAction SilentlyContinue
         return @{
             Success = $false
             Error = $_.Exception.Message
@@ -263,55 +312,36 @@ function Export-ToLCMBIAR {
     }
 }
 
-function Close-BOBJSession {
-    param(
-        [string]$ServerUrl,
-        [string]$LogonToken
-    )
-    
-    Write-Log "Closing BOBJ session..." -Level DEBUG
-    
-    $logoffUrl = "$ServerUrl/biprws/logoff"
-    $headers = @{
-        'X-SAP-LogonToken' = $LogonToken
-    }
-    
-    try {
-        Invoke-RestMethod -Uri $logoffUrl -Method Post -Headers $headers | Out-Null
-        Write-Log "Session closed successfully" -Level DEBUG
-    }
-    catch {
-        Write-Log "Failed to close session cleanly: $_" -Level WARN
-    }
-}
-
 # Main execution
 try {
-    Write-Log "=== BOBJ Content Export Started ===" -Level INFO
-    Write-Log "Server URL: $ServerUrl" -Level INFO
+    Write-Log "=== BOBJ Content Export Started (LCMCLI) ===" -Level INFO
+    Write-Log "CMS Server: ${CmsServer}:${CmsPort}" -Level INFO
     Write-Log "Export Folder: $ExportFolder" -Level INFO
     Write-Log "Output Path: $OutputPath" -Level INFO
     Write-Log "Include Security: $IncludeSecurityRights" -Level INFO
-    Write-Log "Include Dependencies: $IncludeDependencies" -Level INFO
     Write-Log "Backup Mode: $BackupMode" -Level INFO
+    Write-Log "LCMCLI Path: $LcmcliPath" -Level INFO
     
-    # Add System.Web for URL encoding
-    Add-Type -AssemblyName System.Web
+    if ($ServerUrl) {
+        Write-Log "NOTE: -ServerUrl parameter is deprecated. LCMCLI connects directly via CMS. Ignoring ServerUrl." -Level WARN
+    }
     
-    # Authenticate
-    $logonToken = Get-BOBJSession -ServerUrl $ServerUrl -Username $Username -Password $Password -AuthType $AuthType
+    # Verify LCMCLI tool exists
+    Test-LcmcliExists -Path $LcmcliPath
     
     # Export content
     $exportResult = Export-ToLCMBIAR `
-        -ServerUrl $ServerUrl `
-        -LogonToken $logonToken `
+        -CmsServer $CmsServer `
+        -CmsPort $CmsPort `
+        -Username $Username `
+        -Password $Password `
+        -AuthType $AuthType `
         -FolderPath $ExportFolder `
+        -ExportQuery $ExportQuery `
         -OutputPath $OutputPath `
         -IncludeSecurity $IncludeSecurityRights `
-        -IncludeDeps $IncludeDependencies
-    
-    # Close session
-    Close-BOBJSession -ServerUrl $ServerUrl -LogonToken $logonToken
+        -LcmbiarPassword $LcmbiarPassword `
+        -LcmcliPath $LcmcliPath
     
     if ($exportResult.Success) {
         Write-Log "=== Export Completed Successfully ===" -Level INFO
@@ -319,7 +349,7 @@ try {
         
         # Output for Azure DevOps
         Write-Host "##vso[task.setvariable variable=lcmbiarPath]$($exportResult.FilePath)"
-        Write-Host "##vso[task.setvariable variable=exportJobId]$($exportResult.JobId)"
+        Write-Host "##vso[task.setvariable variable=lcmbiarSize]$($exportResult.FileSize)"
         
         exit 0
     }

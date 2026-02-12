@@ -21,7 +21,6 @@ variables:
   # Script Paths
   scriptsPath: '$(Build.SourcesDirectory)/scripts'
   powershellScriptsPath: '$(Build.SourcesDirectory)/scripts/powershell'
-  pythonScriptsPath: '$(Build.SourcesDirectory)/scripts/python'
   configPath: '$(Build.SourcesDirectory)/config'
   
   # BOBJ SDK Settings

@@ -21,36 +21,16 @@ jobs:
       vmImage: 'ubuntu-latest'
     
     steps:
-      - task: UsePythonVersion@0
-        displayName: 'Setup Python'
+      - task: PowerShell@2
+        displayName: 'Validate LCMBIAR Package'
         inputs:
-          versionSpec: '3.10'
-          addToPath: true
-          
-      - script: |
-          pip install -r $(Build.SourcesDirectory)/scripts/python/requirements.txt
-        displayName: 'Install Python Dependencies'
-        
-      - ${{ if parameters.checkStructure }}:
-        - task: PythonScript@0
-          displayName: 'Validate Package Structure'
-          inputs:
-            scriptSource: 'filePath'
-            scriptPath: '$(Build.SourcesDirectory)/scripts/python/lcmbiar_validator.py'
-            arguments: >
-              --input "${{ parameters.artifactPath }}"
-              --check-structure
-              --check-manifest
-              
-      - ${{ if parameters.checkDependencies }}:
-        - task: PythonScript@0
-          displayName: 'Check Dependencies'
-          inputs:
-            scriptSource: 'filePath'
-            scriptPath: '$(Build.SourcesDirectory)/scripts/python/lcmbiar_validator.py'
-            arguments: >
-              --input "${{ parameters.artifactPath }}"
-              --check-dependencies
+          targetType: 'filePath'
+          filePath: '$(Build.SourcesDirectory)/scripts/powershell/Validate-LCMBIARPackage.ps1'
+          arguments: >
+            -LcmbiarPath "${{ parameters.artifactPath }}"
+            ${{ if parameters.checkStructure }}:
+            ${{ if parameters.checkDependencies }}: -CheckDependencies
+          pwsh: true
               
       - ${{ if parameters.runSecurityScan }}:
         - task: PowerShell@2

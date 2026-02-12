@@ -42,5 +42,10 @@
         "maxConcurrentJobs": 1,
         "jobPollingIntervalSeconds": 5,
         "jobTimeoutMinutes": 60
+    },
+    "lcmcli": {
+        "defaultPath": "C:\\Program Files (x86)\\SAP BusinessObjects\\SAP BusinessObjects Enterprise XI 4.0\\win64_x64\\scripts\\lcm\\lcmcli.bat",
+        "timeoutSeconds": 3600,
+        "note": "In SAP BI 2025, LCM operations require LCMCLI. The /biprws/lcm/ REST endpoints do not exist."
     }
 }
