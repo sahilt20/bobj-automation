@@ -44,21 +44,12 @@ stages:
               artifactName: '${{ parameters.backupArtifactName }}'
               targetPath: '$(Pipeline.Workspace)/backup'
               
-          - task: AzureKeyVault@2
-            displayName: 'Fetch BOBJ Credentials'
-            inputs:
-              azureSubscription: $(serviceConnectionName)
-              KeyVaultName: $(keyVaultName)
-              SecretsFilter: 'bobj-username,bobj-password'
-              RunAsPreJob: true
-              
           - task: PowerShell@2
             displayName: 'Execute Rollback'
             inputs:
               targetType: 'filePath'
               filePath: '$(powershellScriptsPath)/Invoke-BOBJRollback.ps1'
               arguments: >
-                -ServerUrl "$(bobjServerUrl)"
                 -CmsServer "$(bobjCmsServer)"
                 -Username "$(bobj-username)"
                 -Password "$(bobj-password)"

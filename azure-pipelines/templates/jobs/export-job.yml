@@ -2,14 +2,14 @@
 # Reusable job for exporting BOBJ content to LCMBIAR
 
 parameters:
-  - name: serverUrl
-    type: string
   - name: cmsServer
     type: string
-  - name: keyVaultName
+  - name: cmsPort
     type: string
-  - name: serviceConnection
+    default: '6400'
+  - name: authType
     type: string
+    default: 'secEnterprise'
   - name: exportFolder
     type: string
     default: '/Public Folders'
@@ -18,12 +18,12 @@ parameters:
   - name: includeSecurityRights
     type: boolean
     default: true
-  - name: includeDependencies
-    type: boolean
-    default: true
   - name: agentPool
     type: string
     default: 'Default'
+
+# NOTE: Credentials (bobj-username, bobj-password) must be provided via
+# a Variable Group linked at the pipeline level. See environment-variables.yml.
 
 jobs:
   - job: ExportBOBJContent
@@ -31,26 +31,18 @@ jobs:
     pool: ${{ parameters.agentPool }}
     
     steps:
-      - task: AzureKeyVault@2
-        displayName: 'Fetch Credentials from Key Vault'
-        inputs:
-          azureSubscription: ${{ parameters.serviceConnection }}
-          KeyVaultName: ${{ parameters.keyVaultName }}
-          SecretsFilter: 'bobj-username,bobj-password'
-          RunAsPreJob: true
-          
       - task: PowerShell@2
         displayName: 'Export BOBJ Content'
         inputs:
           targetType: 'filePath'
           filePath: '$(Build.SourcesDirectory)/scripts/powershell/Export-BOBJContent.ps1'
           arguments: >
-            -ServerUrl "${{ parameters.serverUrl }}"
             -CmsServer "${{ parameters.cmsServer }}"
+            -CmsPort "${{ parameters.cmsPort }}"
             -Username "$(bobj-username)"
             -Password "$(bobj-password)"
+            -AuthType "${{ parameters.authType }}"
             -ExportFolder "${{ parameters.exportFolder }}"
             -OutputPath "${{ parameters.outputPath }}"
             -IncludeSecurityRights:$${{ parameters.includeSecurityRights }}
-            -IncludeDependencies:$${{ parameters.includeDependencies }}
           pwsh: true

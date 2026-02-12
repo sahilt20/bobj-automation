@@ -4,9 +4,7 @@
 
 .DESCRIPTION
     Restores BOBJ content from a backup LCMBIAR file when a deployment fails.
-
-.PARAMETER ServerUrl
-    The URL of the BOBJ server
+    Uses the Import-BOBJContent.ps1 script with LCMCLI under the hood.
 
 .PARAMETER CmsServer
     The CMS server hostname
@@ -20,15 +18,15 @@
 .PARAMETER BackupPath
     Path to the backup LCMBIAR file or directory
 
+.PARAMETER LcmcliPath
+    Path to the lcmcli.bat tool on the BOBJ server
+
 .PARAMETER VerboseLogging
     Enable verbose logging
 #>
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory = $true)]
-    [string]$ServerUrl,
-    
     [Parameter(Mandatory = $true)]
     [string]$CmsServer,
     
@@ -42,7 +40,14 @@ param(
     [string]$BackupPath,
     
     [Parameter(Mandatory = $false)]
-    [switch]$VerboseLogging = $false
+    [string]$LcmcliPath = 'C:\Program Files (x86)\SAP BusinessObjects\SAP BusinessObjects Enterprise XI 4.0\win64_x64\scripts\lcm\lcmcli.bat',
+    
+    [Parameter(Mandatory = $false)]
+    [switch]$VerboseLogging = $false,
+
+    # Legacy parameter - kept for backward compatibility
+    [Parameter(Mandatory = $false)]
+    [string]$ServerUrl
 )
 
 $ErrorActionPreference = 'Stop'
@@ -60,8 +65,12 @@ function Write-Log {
 
 try {
     Write-Log "=== BOBJ Rollback Started ===" -Level WARN
-    Write-Log "Server URL: $ServerUrl"
+    Write-Log "CMS Server: $CmsServer"
     Write-Log "Backup Path: $BackupPath"
+    
+    if ($ServerUrl) {
+        Write-Log "NOTE: -ServerUrl parameter is deprecated. LCMCLI connects directly via CMS. Ignoring ServerUrl." -Level WARN
+    }
     
     # Verify backup exists
     if (-not (Test-Path $BackupPath)) {
@@ -71,17 +80,17 @@ try {
     
     Write-Log "Backup verified, initiating restore..."
     
-    # Call Import-BOBJContent with rollback flag
+    # Call Import-BOBJContent with rollback settings
     $importScript = Join-Path $PSScriptRoot "Import-BOBJContent.ps1"
     
     $params = @{
-        ServerUrl = $ServerUrl
         CmsServer = $CmsServer
         Username = $Username
         Password = $Password
         LcmbiarPath = $BackupPath
         ConflictResolution = 'UpdateExisting'
         OverwriteSecurity = $true
+        LcmcliPath = $LcmcliPath
     }
     
     if ($VerboseLogging) {

@@ -2,7 +2,7 @@
     "info": {
         "_postman_id": "bobj-rest-api",
         "name": "SAP BOBJ REST API",
-        "description": "Collection for testing SAP BusinessObjects REST Web Services used in automation scripts.",
+        "description": "Collection for testing SAP BusinessObjects REST Web Services.\n\n⚠️ IMPORTANT (SAP BI 2025): The biprws REST API does NOT support LCM promotion or import operations. Those endpoints (/biprws/lcm/*) do not exist and will return RWS 00005 (Not Found).\n\nFor LCM operations (export/import LCMBIAR), use the LCMCLI command-line tool instead.\n\nThis collection covers only the supported biprws endpoints: Authentication, InfoStore browsing, and system connectivity testing.",
         "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
     },
     "item": [
@@ -92,6 +92,45 @@
             "name": "InfoStore",
             "item": [
                 {
+                    "name": "Get API Root",
+                    "event": [
+                        {
+                            "listen": "test",
+                            "script": {
+                                "exec": [
+                                    "pm.test(\"Status code is 200\", function () {",
+                                    "    pm.response.to.have.status(200);",
+                                    "});",
+                                    "pm.test(\"API root is accessible\", function () {",
+                                    "    pm.expect(pm.response.text()).to.not.be.empty;",
+                                    "});"
+                                ],
+                                "type": "text/javascript"
+                            }
+                        }
+                    ],
+                    "request": {
+                        "method": "GET",
+                        "header": [
+                            {
+                                "key": "Accept",
+                                "value": "application/json"
+                            }
+                        ],
+                        "url": {
+                            "raw": "{{baseUrl}}/biprws",
+                            "host": [
+                                "{{baseUrl}}"
+                            ],
+                            "path": [
+                                "biprws"
+                            ]
+                        },
+                        "description": "Test that the biprws REST API root is accessible. This does not require authentication."
+                    },
+                    "response": []
+                },
+                {
                     "name": "Get InfoStore",
                     "request": {
                         "method": "GET",
@@ -114,7 +153,8 @@
                                 "biprws",
                                 "infostore"
                             ]
-                        }
+                        },
+                        "description": "Browse the InfoStore root. Requires a valid logon token."
                     },
                     "response": []
                 },
@@ -148,67 +188,13 @@
                                     "value": "/Public Folders"
                                 }
                             ]
-                        }
-                    },
-                    "response": []
-                }
-            ]
-        },
-        {
-            "name": "LCM Promotion (Export)",
-            "item": [
-                {
-                    "name": "Create Promotion Job",
-                    "event": [
-                        {
-                            "listen": "test",
-                            "script": {
-                                "exec": [
-                                    "var jsonData = pm.response.json();",
-                                    "if (jsonData.id) {",
-                                    "    pm.environment.set(\"exportJobId\", jsonData.id);",
-                                    "}"
-                                ],
-                                "type": "text/javascript"
-                            }
-                        }
-                    ],
-                    "request": {
-                        "method": "POST",
-                        "header": [
-                            {
-                                "key": "X-SAP-LogonToken",
-                                "value": "{{logonToken}}"
-                            },
-                            {
-                                "key": "Content-Type",
-                                "value": "application/json"
-                            },
-                            {
-                                "key": "Accept",
-                                "value": "application/json"
-                            }
-                        ],
-                        "body": {
-                            "mode": "raw",
-                            "raw": "{\n    \"name\": \"Postman_Export_Test\",\n    \"sourcePath\": \"/Public Folders/Reports\",\n    \"includeSecurityRights\": true,\n    \"includeDependencies\": true,\n    \"exportType\": \"LCMBIAR\"\n}"
                         },
-                        "url": {
-                            "raw": "{{baseUrl}}/biprws/lcm/promotions",
-                            "host": [
-                                "{{baseUrl}}"
-                            ],
-                            "path": [
-                                "biprws",
-                                "lcm",
-                                "promotions"
-                            ]
-                        }
+                        "description": "Get contents of a specific folder by path."
                     },
                     "response": []
                 },
                 {
-                    "name": "Get Job Status",
+                    "name": "Get Object by CUID",
                     "request": {
                         "method": "GET",
                         "header": [
@@ -222,171 +208,17 @@
                             }
                         ],
                         "url": {
-                            "raw": "{{baseUrl}}/biprws/lcm/promotions/{{exportJobId}}/status",
+                            "raw": "{{baseUrl}}/biprws/infostore/cuid_{{objectCuid}}",
                             "host": [
                                 "{{baseUrl}}"
                             ],
                             "path": [
                                 "biprws",
-                                "lcm",
-                                "promotions",
-                                "{{exportJobId}}",
-                                "status"
-                            ]
-                        }
-                    },
-                    "response": []
-                },
-                {
-                    "name": "Download LCMBIAR",
-                    "request": {
-                        "method": "GET",
-                        "header": [
-                            {
-                                "key": "X-SAP-LogonToken",
-                                "value": "{{logonToken}}"
-                            }
-                        ],
-                        "url": {
-                            "raw": "{{baseUrl}}/biprws/lcm/promotions/{{exportJobId}}/download",
-                            "host": [
-                                "{{baseUrl}}"
-                            ],
-                            "path": [
-                                "biprws",
-                                "lcm",
-                                "promotions",
-                                "{{exportJobId}}",
-                                "download"
-                            ]
-                        }
-                    },
-                    "response": []
-                }
-            ]
-        },
-        {
-            "name": "LCM Import",
-            "item": [
-                {
-                    "name": "Upload LCMBIAR (Import)",
-                    "event": [
-                        {
-                            "listen": "test",
-                            "script": {
-                                "exec": [
-                                    "var jsonData = pm.response.json();",
-                                    "if (jsonData.id) {",
-                                    "    pm.environment.set(\"importJobId\", jsonData.id);",
-                                    "}"
-                                ],
-                                "type": "text/javascript"
-                            }
-                        }
-                    ],
-                    "request": {
-                        "method": "POST",
-                        "header": [
-                            {
-                                "key": "X-SAP-LogonToken",
-                                "value": "{{logonToken}}"
-                            },
-                            {
-                                "key": "Accept",
-                                "value": "application/json"
-                            }
-                        ],
-                        "body": {
-                            "mode": "formdata",
-                            "formdata": [
-                                {
-                                    "key": "file",
-                                    "type": "file",
-                                    "src": []
-                                },
-                                {
-                                    "key": "conflictResolution",
-                                    "value": "overwrite",
-                                    "type": "text"
-                                },
-                                {
-                                    "key": "overwriteSecurity",
-                                    "value": "false",
-                                    "type": "text"
-                                }
+                                "infostore",
+                                "cuid_{{objectCuid}}"
                             ]
                         },
-                        "url": {
-                            "raw": "{{baseUrl}}/biprws/lcm/imports",
-                            "host": [
-                                "{{baseUrl}}"
-                            ],
-                            "path": [
-                                "biprws",
-                                "lcm",
-                                "imports"
-                            ]
-                        }
-                    },
-                    "response": []
-                },
-                {
-                    "name": "Get Import Status",
-                    "request": {
-                        "method": "GET",
-                        "header": [
-                            {
-                                "key": "X-SAP-LogonToken",
-                                "value": "{{logonToken}}"
-                            },
-                            {
-                                "key": "Accept",
-                                "value": "application/json"
-                            }
-                        ],
-                        "url": {
-                            "raw": "{{baseUrl}}/biprws/lcm/imports/{{importJobId}}/status",
-                            "host": [
-                                "{{baseUrl}}"
-                            ],
-                            "path": [
-                                "biprws",
-                                "lcm",
-                                "imports",
-                                "{{importJobId}}",
-                                "status"
-                            ]
-                        }
-                    },
-                    "response": []
-                },
-                {
-                    "name": "Get Import Results",
-                    "request": {
-                        "method": "GET",
-                        "header": [
-                            {
-                                "key": "X-SAP-LogonToken",
-                                "value": "{{logonToken}}"
-                            },
-                            {
-                                "key": "Accept",
-                                "value": "application/json"
-                            }
-                        ],
-                        "url": {
-                            "raw": "{{baseUrl}}/biprws/lcm/imports/{{importJobId}}/results",
-                            "host": [
-                                "{{baseUrl}}"
-                            ],
-                            "path": [
-                                "biprws",
-                                "lcm",
-                                "imports",
-                                "{{importJobId}}",
-                                "results"
-                            ]
-                        }
+                        "description": "Retrieve a specific object by its CUID. Set the 'objectCuid' variable first."
                     },
                     "response": []
                 }
@@ -396,8 +228,9 @@
     "variable": [
         {
             "key": "baseUrl",
-            "value": "http://your-bobj-server:6405",
-            "type": "string"
+            "value": "http://your-bobj-server:8080",
+            "type": "string",
+            "description": "Base URL for the BOBJ Web Application Server (typically port 8080 for Tomcat)"
         },
         {
             "key": "username",
@@ -413,6 +246,12 @@
             "key": "authType",
             "value": "secEnterprise",
             "type": "string"
+        },
+        {
+            "key": "objectCuid",
+            "value": "",
+            "type": "string",
+            "description": "CUID of an object to look up (used by Get Object by CUID request)"
         }
     ]
 }

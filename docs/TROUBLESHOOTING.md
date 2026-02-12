@@ -1,6 +1,46 @@
 # Troubleshooting Guide
 
-## Common Issues
+## SAP BI 2025 — Important Notes
+
+> **In SAP BI 2025, the `biprws.war` was merged into `BOE.war`**, and the `/biprws/lcm/promotions` and `/biprws/lcm/imports` REST endpoints **do not exist**. All LCM (Lifecycle Management) operations must use the **LCMCLI** command-line tool.
+
+### RWS 00005 — Not Found
+
+**Symptom:** Calling `/biprws/lcm/promotions` or `/biprws/lcm/imports` returns `RWS 00005`
+
+**Cause:** These endpoints were never part of the supported `biprws` REST API. In BI 2025, the REST API only supports authentication, InfoStore browsing, and scheduling.
+
+**Solution:** Use LCMCLI for all export/import operations:
+```powershell
+# Export
+.\Export-BOBJContent.ps1 -CmsServer "bobj-cms" -Username "admin" -Password "pass" -ExportFolder "/Public Folders" -OutputPath "./export"
+
+# Import
+.\Import-BOBJContent.ps1 -CmsServer "bobj-cms" -Username "admin" -Password "pass" -LcmbiarPath "./export/file.lcmbiar"
+```
+
+### LCMCLI Not Found
+
+**Symptom:** `LCMCLI tool not found` error
+
+**Solution:** Verify the LCMCLI path on your BOBJ server. Default location:
+```
+C:\Program Files (x86)\SAP BusinessObjects\SAP BusinessObjects Enterprise XI 4.0\win64_x64\scripts\lcm\lcmcli.bat
+```
+Set the correct path using `-LcmcliPath` parameter or update `config/promotion-settings.json`.
+
+### LCMCLI Authentication Failure
+
+**Symptom:** LCMCLI exits with authentication error
+
+**Solutions:**
+1. Verify credentials are correct
+2. Ensure CMS server and port are reachable: `telnet bobj-cms 6400`
+3. Check `-auth` parameter matches your BOBJ config (`secEnterprise`, `secLDAP`, etc.)
+
+---
+
+
 
 ### Authentication Failures
 
@@ -69,14 +109,11 @@
 **Symptom:** "Access denied" to Key Vault
 
 **Solutions:**
-1. Verify service connection has Key Vault access
-2. Check Key Vault access policies
-3. Ensure subscription permissions are correct:
-   ```bash
-   az keyvault set-policy --name kv-bobj-dev \
-     --spn <service-principal-id> \
-     --secret-permissions get list
-   ```
+1. Verify the Variable Group exists in Pipelines → Library
+2. Ensure the Variable Group name matches `bobj-creds-{environment}`
+3. Check that `bobj-password` is marked as a secret variable
+4. Ensure the pipeline has permission to access the Variable Group:
+   - Go to Pipelines → Library → Variable Group → Pipeline permissions
 
 ### Approval Issues
 

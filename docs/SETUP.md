@@ -8,38 +8,35 @@ This guide walks you through setting up the BOBJ Transport CI/CD framework.
 
 - Azure DevOps organization with project
 - Permission to create pipelines and environments
-- Service principal with Azure subscription access
 
 ### Self-Hosted Agents
 
 Agents must have:
 - Network connectivity to BOBJ servers
 - PowerShell 7.0+
-- Python 3.8+
-- Java JDK 11+ (for BOBJ SDK if using Java API)
+- LCMCLI tool installed (SAP BI Client Tools)
 
 ### SAP BusinessObjects
 
-- BI Platform 4.2 SP5+ (or 4.3)
-- REST API enabled on Web Application Server
+- BI Platform 2025 (or 4.2 SP5+)
+- REST API enabled on Web Application Server (for connectivity tests)
 - Service account with promotion management rights
+- LCMCLI tool available on agent machines
 
-## Step 1: Azure Key Vault Setup
+## Step 1: Create Variable Groups
 
-Create Key Vaults for each environment:
+Create Variable Groups in Azure DevOps for each environment to store credentials:
 
-```bash
-# Create Key Vaults
-az keyvault create --name kv-bobj-dev --resource-group rg-bobj --location eastus
-az keyvault create --name kv-bobj-qa --resource-group rg-bobj --location eastus
-az keyvault create --name kv-bobj-prod --resource-group rg-bobj --location eastus
+1. Go to **Pipelines → Library → Variable Groups**
+2. Create the following groups:
 
-# Add secrets
-az keyvault secret set --vault-name kv-bobj-dev --name bobj-username --value "BOBJServiceAccount"
-az keyvault secret set --vault-name kv-bobj-dev --name bobj-password --value "YourSecurePassword"
+| Variable Group    | Variables                                   |
+| ----------------- | ------------------------------------------- |
+| `bobj-creds-dev`  | `bobj-username`, `bobj-password` (🔒 secret) |
+| `bobj-creds-qa`   | `bobj-username`, `bobj-password` (🔒 secret) |
+| `bobj-creds-prod` | `bobj-username`, `bobj-password` (🔒 secret) |
 
-# (Repeat for qa and prod)
-```
+> **Important:** Mark `bobj-password` as a **secret variable** in each group.
 
 ## Step 2: Configure Environments
 
@@ -47,20 +44,14 @@ Edit `config/environments/*.json` files with your BOBJ server details.
 
 ### Key Settings
 
-| Setting | Description |
-|---------|-------------|
-| `server.url` | BOBJ Web Application Server URL |
-| `server.cms.host` | CMS Server hostname |
-| `authentication.keyVault` | Key Vault name for this environment |
-| `agentPool` | Azure DevOps agent pool name |
+| Setting                        | Description                                 |
+| ------------------------------ | ------------------------------------------- |
+| `server.url`                   | BOBJ Web Application Server URL (port 8080) |
+| `server.cms.host`              | CMS Server hostname                         |
+| `authentication.variableGroup` | Variable Group name for this environment    |
+| `agentPool`                    | Azure DevOps agent pool name                |
 
 ## Step 3: Azure DevOps Setup
-
-### Create Service Connections
-
-1. Go to Project Settings → Service Connections
-2. Create Azure Resource Manager connection for each environment
-3. Grant access to corresponding Key Vault
 
 ### Create Environments
 
@@ -69,12 +60,6 @@ Edit `config/environments/*.json` files with your BOBJ server details.
    - `bobj-dev` (no approvals)
    - `bobj-qa` (add approval checks)
    - `bobj-prod` (add multi-reviewer approval)
-
-### Create Variable Groups
-
-1. Go to Pipelines → Library
-2. Create variable group `bobj-common`:
-   - `teamsWebhookUrl` (linked to Key Vault if needed)
 
 ### Import Pipelines
 
@@ -122,3 +107,4 @@ For validation-only stages, Microsoft-hosted agents work fine.
 ## Troubleshooting
 
 See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for common issues.
+See [LCMCLI_REFERENCE.md](LCMCLI_REFERENCE.md) for LCMCLI command reference.

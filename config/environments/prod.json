@@ -11,9 +11,9 @@
     },
     "authentication": {
         "type": "secEnterprise",
-        "keyVault": "kv-bobj-prod",
-        "usernameSecret": "bobj-username",
-        "passwordSecret": "bobj-password"
+        "variableGroup": "bobj-creds-prod",
+        "usernameVariable": "bobj-username",
+        "passwordVariable": "bobj-password"
     },
     "settings": {
         "defaultExportFolder": "/Public Folders",

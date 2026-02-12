@@ -14,7 +14,7 @@ A comprehensive CI/CD framework for automating SAP BusinessObjects (BOBJ) conten
 - **Approval Gates** - Manual approvals for QA and Production
 - **Automatic Rollback** - Restore from backup on deployment failure
 - **Notifications** - Teams and Email notifications
-- **Security Integration** - Azure Key Vault for credentials
+- **Security Integration** - Azure DevOps Variable Groups for credentials
 
 ## 📁 Project Structure
 
@@ -37,8 +37,8 @@ bobj-automation/
 
 1. **Azure DevOps Organization** with pipelines enabled
 2. **Self-hosted agents** with connectivity to BOBJ servers
-3. **Azure Key Vault** for storing credentials
-4. **SAP BusinessObjects BI 4.2+** with REST API enabled
+3. **Azure DevOps Variable Groups** for storing credentials
+4. **SAP BusinessObjects BI 2025** with LCMCLI tool available
 
 ### Setup Steps
 
@@ -54,12 +54,12 @@ bobj-automation/
    - `qa.json` - QA/Staging environment
    - `prod.json` - Production environment
 
-3. **Create Azure Key Vault secrets**
-   ```bash
-   # For each environment (dev, qa, prod)
-   az keyvault secret set --vault-name kv-bobj-dev --name bobj-username --value "your-username"
-   az keyvault secret set --vault-name kv-bobj-dev --name bobj-password --value "your-password"
-   ```
+3. **Create Variable Groups** in Azure DevOps
+   
+   Go to Pipelines → Library → Variable Groups and create:
+   - `bobj-creds-dev` with `bobj-username` and `bobj-password` (🔒 secret)
+   - `bobj-creds-qa` with `bobj-username` and `bobj-password` (🔒 secret)
+   - `bobj-creds-prod` with `bobj-username` and `bobj-password` (🔒 secret)
 
 4. **Create Azure DevOps environments**
    - `bobj-dev` - No approval required
@@ -74,11 +74,11 @@ bobj-automation/
 
 The CI pipeline exports and validates BOBJ content:
 
-| Stage | Description |
-|-------|-------------|
-| Export | Exports content from source BOBJ to LCMBIAR |
-| Validate | Validates package structure and security |
-| Publish | Publishes artifact for deployment |
+| Stage    | Description                                 |
+| -------- | ------------------------------------------- |
+| Export   | Exports content from source BOBJ to LCMBIAR |
+| Validate | Validates package structure and security    |
+| Publish  | Publishes artifact for deployment           |
 
 **Trigger:** Push to `main` or `develop` branches
 
@@ -86,11 +86,11 @@ The CI pipeline exports and validates BOBJ content:
 
 The CD pipeline deploys content across environments:
 
-| Stage | Description | Approval |
-|-------|-------------|----------|
-| Deploy to Dev | Deploy to Development | Auto |
-| Deploy to QA | Deploy to QA | Manual |
-| Deploy to Prod | Deploy to Production | 2+ Reviewers |
+| Stage          | Description           | Approval     |
+| -------------- | --------------------- | ------------ |
+| Deploy to Dev  | Deploy to Development | Auto         |
+| Deploy to QA   | Deploy to QA          | Manual       |
+| Deploy to Prod | Deploy to Production  | 2+ Reviewers |
 
 **Features:**
 - Pre-deployment backup creation
@@ -101,32 +101,32 @@ The CD pipeline deploys content across environments:
 
 ### Pipeline Parameters
 
-| Parameter | Description | Default |
-|-----------|-------------|---------|
-| `sourceEnvironment` | Source system for export | `dev` |
-| `exportFolder` | BOBJ folder to export | `/Public Folders` |
-| `conflictResolution` | How to handle conflicts | `UpdateExisting` |
-| `createBackup` | Create backup before deploy | `true` |
-| `enableRollback` | Auto-rollback on failure | `true` |
+| Parameter            | Description                 | Default           |
+| -------------------- | --------------------------- | ----------------- |
+| `sourceEnvironment`  | Source system for export    | `dev`             |
+| `exportFolder`       | BOBJ folder to export       | `/Public Folders` |
+| `conflictResolution` | How to handle conflicts     | `UpdateExisting`  |
+| `createBackup`       | Create backup before deploy | `true`            |
+| `enableRollback`     | Auto-rollback on failure    | `true`            |
 
 ### Environment Variables
 
-| Variable | Description |
-|----------|-------------|
+| Variable            | Description                |
+| ------------------- | -------------------------- |
 | `TEAMS_WEBHOOK_URL` | Teams notification webhook |
-| `SMTP_HOST` | Email SMTP server |
+| `SMTP_HOST`         | Email SMTP server          |
 
 ## 🔧 Scripts
 
 ### PowerShell
 
-| Script | Purpose |
-|--------|---------|
-| `Export-BOBJContent.ps1` | Export to LCMBIAR |
-| `Import-BOBJContent.ps1` | Import LCMBIAR |
-| `Get-BOBJConnection.ps1` | Test connectivity |
-| `Validate-LCMBIARPackage.ps1` | Validate package |
-| `Invoke-BOBJRollback.ps1` | Execute rollback |
+| Script                        | Purpose           |
+| ----------------------------- | ----------------- |
+| `Export-BOBJContent.ps1`      | Export to LCMBIAR |
+| `Import-BOBJContent.ps1`      | Import LCMBIAR    |
+| `Get-BOBJConnection.ps1`      | Test connectivity |
+| `Validate-LCMBIARPackage.ps1` | Validate package  |
+| `Invoke-BOBJRollback.ps1`     | Execute rollback  |
 
 ## 📖 Documentation
 
